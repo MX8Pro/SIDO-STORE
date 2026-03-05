@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useReducer, useState } from 'react';
+﻿import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { motion as Motion, AnimatePresence } from 'framer-motion';
 import {
   onAuthStateChanged,
@@ -30,7 +30,9 @@ import {
   Lock,
   LogOut,
   Mail,
+  MessageCircle,
   Megaphone,
+  MoonStar,
   Package,
   Plus,
   Power,
@@ -41,12 +43,23 @@ import {
   ShoppingCart,
   Sparkles,
   Store,
+  SunMedium,
   Trash2,
   User,
   XCircle,
 } from 'lucide-react';
 
 const CATEGORIES = ['الكل', 'رجال', 'نساء', 'أحذية', 'إكسسوارات'];
+
+const PAGE_TRANSITION = { duration: 0.35, ease: 'easeOut' };
+
+const CATEGORY_META = {
+  الكل: { icon: LayoutDashboard, tone: 'from-slate-600 to-slate-800' },
+  رجال: { icon: User, tone: 'from-blue-500 to-indigo-600' },
+  نساء: { icon: Heart, tone: 'from-rose-500 to-pink-600' },
+  أحذية: { icon: ShoppingBag, tone: 'from-amber-500 to-orange-600' },
+  إكسسوارات: { icon: Sparkles, tone: 'from-emerald-500 to-teal-600' },
+};
 
 const ORDER_STATUSES = [
   { key: 'pending', label: 'قيد المعالجة', className: 'bg-amber-100 text-amber-700 border-amber-200' },
@@ -60,6 +73,7 @@ const STORAGE_KEYS = {
   orders: 'my_store_orders_v2',
   siteConfig: 'my_store_site_config_v2',
   favorites: 'my_store_favorites_v1',
+  adminTheme: 'my_store_admin_theme_v1',
 };
 
 const DEFAULT_SITE_CONFIG = {
@@ -68,6 +82,7 @@ const DEFAULT_SITE_CONFIG = {
   announcement: '',
   couponCode: '',
   couponDiscount: 0,
+  whatsappNumber: '',
 };
 
 const initialProductsData = [
@@ -213,6 +228,7 @@ const Toast = ({ toast }) => (
         key="toast"
         initial={{ opacity: 0, y: -50 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={PAGE_TRANSITION}
         exit={{ opacity: 0, y: -50 }}
         className="fixed top-4 left-1/2 transform -translate-x-1/2 z-[9999] flex justify-center pointer-events-none"
       >
@@ -238,18 +254,61 @@ const AnnouncementBar = ({ text }) => {
   return <div className="bg-emerald-500 text-white text-xs md:text-sm font-bold py-2 px-4 text-center">{text}</div>;
 };
 
+const normalizeWhatsappNumber = (value) => String(value || '').replace(/[^\d]/g, '');
+
+const ProductsSkeletonGrid = () => (
+  <div className="px-4 py-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-8">
+    {Array.from({ length: 8 }).map((_, index) => (
+      <div key={`skeleton-${index}`} className="overflow-hidden rounded-[1.5rem] border border-white/50 bg-white/70 backdrop-blur-xl shadow-sm">
+        <div className="relative aspect-[4/5] bg-slate-200/80">
+          <div className="absolute inset-0 skeleton-shimmer" />
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="h-4 rounded-lg bg-slate-200/80" />
+          <div className="h-4 w-2/3 rounded-lg bg-slate-200/80" />
+          <div className="h-6 w-1/2 rounded-lg bg-slate-300/80" />
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
+const FloatingWhatsAppButton = ({ phoneNumber }) => {
+  const normalized = normalizeWhatsappNumber(phoneNumber);
+  if (!normalized) return null;
+
+  const message = encodeURIComponent('مرحباً، أريد الاستفسار عن منتجات المتجر.');
+
+  return (
+    <Motion.a
+      href={`https://wa.me/${normalized}?text=${message}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={PAGE_TRANSITION}
+      className="fixed left-4 md:left-6 bottom-24 md:bottom-6 z-50 inline-flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-3 text-white shadow-xl shadow-emerald-600/30 hover:bg-emerald-600 transition-all"
+      aria-label="تواصل واتساب"
+      title="تواصل عبر واتساب"
+    >
+      <MessageCircle size={20} />
+      <span className="text-xs md:text-sm font-black">واتساب</span>
+    </Motion.a>
+  );
+};
 const DesktopNavbar = ({
   currentRoute,
   navigateTo,
   cartCount,
   isAdminAuth,
+  isCartAnimating,
   onAdminLogout,
   siteName,
   searchQuery,
   setSearchQuery,
   favoritesCount,
 }) => (
-  <div className="hidden md:block bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b border-gray-100 shadow-sm transition-all">
+  <div className="hidden md:block bg-white/70 backdrop-blur-xl sticky top-0 z-50 border-b border-white/60 shadow-lg shadow-slate-900/5 transition-all">
     <div className="max-w-7xl mx-auto px-6 h-20 flex justify-between items-center gap-6">
       <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={() => navigateTo('home')}>
         <div className="bg-slate-900 p-2.5 rounded-xl text-white shadow-lg">
@@ -295,13 +354,28 @@ const DesktopNavbar = ({
           )}
         </button>
 
-        <button onClick={() => navigateTo('cart')} className="relative p-2 text-gray-600 hover:text-slate-900 transition-colors">
+        <button
+          onClick={() => navigateTo('cart')}
+          className={`relative p-2 text-gray-600 hover:text-slate-900 transition-colors ${isCartAnimating ? 'animate-cart-shake' : ''}`}
+        >
           <ShoppingCart size={24} />
           {cartCount > 0 && (
             <span className="absolute -top-1 -right-1 bg-emerald-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center font-bold shadow-sm">
               {cartCount}
             </span>
           )}
+          <AnimatePresence>
+            {isCartAnimating && (
+              <Motion.span
+                initial={{ scale: 0.5, opacity: 0, y: 6 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.5, opacity: 0, y: 6 }}
+                className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] bg-emerald-500 text-white px-1.5 py-0.5 rounded-full font-black"
+              >
+                +1
+              </Motion.span>
+            )}
+          </AnimatePresence>
         </button>
 
         <div className="w-px h-6 bg-gray-200" />
@@ -337,10 +411,13 @@ const DesktopNavbar = ({
   </div>
 );
 
-const MobileHeader = ({ title, cartCount, navigateTo }) => (
-  <header className="md:hidden bg-white/90 backdrop-blur-md sticky top-0 z-40 border-b border-gray-100 px-4 py-3 flex justify-between items-center h-16 shadow-sm">
+const MobileHeader = ({ title, cartCount, navigateTo, isCartAnimating }) => (
+  <header className="md:hidden bg-white/80 backdrop-blur-xl sticky top-0 z-40 border-b border-white/60 px-4 py-3 flex justify-between items-center h-16 shadow-sm">
     <h1 className="text-xl font-black text-slate-900 tracking-tight">{title}</h1>
-    <button onClick={() => navigateTo('cart')} className="relative p-2 text-slate-600 bg-gray-50 rounded-full">
+    <button
+      onClick={() => navigateTo('cart')}
+      className={`relative p-2 text-slate-600 bg-gray-50 rounded-full ${isCartAnimating ? 'animate-cart-shake' : ''}`}
+    >
       <ShoppingCart size={20} />
       {cartCount > 0 && (
         <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold border-2 border-white">
@@ -351,8 +428,8 @@ const MobileHeader = ({ title, cartCount, navigateTo }) => (
   </header>
 );
 
-const BottomNav = ({ currentRoute, navigateTo, cartCount }) => (
-  <div className="md:hidden fixed bottom-0 left-0 w-full bg-white border-t border-gray-100 pb-safe pt-2 px-6 flex justify-between items-center z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
+const BottomNav = ({ currentRoute, navigateTo, cartCount, isCartAnimating }) => (
+  <div className="md:hidden fixed bottom-0 left-0 w-full bg-white/80 backdrop-blur-xl border-t border-white/60 pb-safe pt-2 px-6 flex justify-between items-center z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
     <button
       onClick={() => navigateTo('home')}
       className={`flex flex-col items-center p-2 transition-colors ${currentRoute === 'home' ? 'text-emerald-600' : 'text-gray-400'}`}
@@ -362,7 +439,7 @@ const BottomNav = ({ currentRoute, navigateTo, cartCount }) => (
     </button>
     <button
       onClick={() => navigateTo('cart')}
-      className={`flex flex-col items-center p-2 relative transition-colors ${
+      className={`flex flex-col items-center p-2 relative transition-colors ${isCartAnimating ? 'animate-cart-shake' : ''} ${
         currentRoute === 'cart' || currentRoute === 'checkout' ? 'text-emerald-600' : 'text-gray-400'
       }`}
     >
@@ -384,20 +461,34 @@ const BottomNav = ({ currentRoute, navigateTo, cartCount }) => (
   </div>
 );
 
-const MaintenanceView = ({ siteName }) => (
-  <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 text-center">
+const MaintenanceView = ({ siteName, onOpenAdmin }) => (
+  <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-900/80 flex flex-col items-center justify-center p-4 text-center text-white">
     <Motion.div
-      initial={{ scale: 0.9, opacity: 0 }}
+      initial={{ scale: 0.95, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
-      className="bg-white p-10 rounded-[3rem] shadow-xl border border-gray-100 max-w-md w-full"
+      transition={PAGE_TRANSITION}
+      className="relative overflow-hidden bg-white/10 backdrop-blur-2xl p-8 md:p-10 rounded-[2.5rem] shadow-2xl border border-white/20 max-w-xl w-full"
     >
-      <div className="w-24 h-24 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-6">
-        <Power size={40} />
-      </div>
-      <h2 className="text-3xl font-black text-slate-900 mb-4">{siteName}</h2>
-      <p className="text-lg font-bold text-gray-500 mb-8">المتجر حالياً في وضع الصيانة. سنعود قريباً جداً.</p>
-      <div className="flex items-center justify-center gap-2 text-sm text-gray-400 font-bold bg-gray-50 py-3 px-6 rounded-full w-fit mx-auto">
-        <ShieldCheck size={16} /> جاري تحسين التجربة
+      <div className="absolute -top-20 -left-10 w-48 h-48 rounded-full bg-emerald-400/20 blur-3xl" />
+      <div className="absolute -bottom-20 -right-10 w-48 h-48 rounded-full bg-cyan-400/20 blur-3xl" />
+
+      <div className="relative z-10">
+        <div className="w-24 h-24 bg-orange-400/20 text-orange-300 rounded-full flex items-center justify-center mx-auto mb-6 border border-orange-200/30">
+          <Power size={42} />
+        </div>
+        <h2 className="text-3xl md:text-4xl font-black mb-4">{siteName}</h2>
+        <p className="text-base md:text-lg font-bold text-slate-200 mb-8">المتجر الآن في وضع الصيانة لتحسين الأداء وتجربة التسوق. سنعود خلال وقت قصير.</p>
+
+        <div className="flex items-center justify-center gap-2 text-sm text-slate-100 font-bold bg-white/10 py-3 px-6 rounded-full w-fit mx-auto border border-white/20 mb-6">
+          <ShieldCheck size={16} /> تحديثات جارية بشكل آمن
+        </div>
+
+        <button
+          onClick={onOpenAdmin}
+          className="inline-flex items-center gap-2 bg-white text-slate-900 px-6 py-3 rounded-full font-black hover:bg-slate-100 transition"
+        >
+          <Lock size={18} /> دخول الإدارة
+        </button>
       </div>
     </Motion.div>
   </div>
@@ -409,13 +500,14 @@ const OrderStatusPill = ({ status }) => {
 };
 const HomeView = ({
   products,
-  dispatchCart,
+  onAddToCart,
   showToast,
   searchQuery,
   setSearchQuery,
   favorites,
   toggleFavorite,
   orders,
+  isLoadingProducts,
 }) => {
   const [activeCategory, setActiveCategory] = useState('الكل');
   const [sortBy, setSortBy] = useState('newest');
@@ -454,7 +546,7 @@ const HomeView = ({
   const recentOrders = useMemo(() => orders.slice(0, 3), [orders]);
 
   return (
-    <Motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="pb-24 md:pb-10 max-w-7xl mx-auto w-full">
+    <Motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={PAGE_TRANSITION} className="pb-24 md:pb-10 max-w-7xl mx-auto w-full">
       <div className="px-4 py-4 md:py-8">
         <div className="bg-slate-900 rounded-[2rem] p-8 md:p-16 text-white relative overflow-hidden shadow-2xl flex flex-col justify-center min-h-[200px] md:min-h-[360px]">
           <div className="relative z-10 max-w-2xl">
@@ -512,23 +604,28 @@ const HomeView = ({
       </div>
 
       <div className="px-4 py-2 overflow-x-auto no-scrollbar flex gap-2 md:gap-4 md:justify-center md:mb-6 md:mt-2">
-        {CATEGORIES.map((category) => (
-          <button
-            key={category}
-            onClick={() => setActiveCategory(category)}
-            className={`whitespace-nowrap px-5 py-2.5 rounded-full text-sm font-bold transition-all duration-300 ${
-              activeCategory === category
-                ? 'bg-slate-900 text-white shadow-md transform scale-105'
-                : 'bg-white border border-gray-200 text-slate-600 hover:bg-gray-50'
-            }`}
-          >
-            {category}
-          </button>
-        ))}
+        {CATEGORIES.map((category) => {
+          const categoryMeta = CATEGORY_META[category] || CATEGORY_META['الكل'];
+          const CategoryIcon = categoryMeta.icon;
+
+          return (
+            <button
+              key={category}
+              onClick={() => setActiveCategory(category)}
+              className={`whitespace-nowrap px-4 py-2.5 rounded-full text-sm font-bold transition-all duration-300 inline-flex items-center gap-2 ${
+                activeCategory === category
+                  ? `bg-gradient-to-r ${categoryMeta.tone} text-white shadow-md transform scale-105`
+                  : 'bg-white/80 backdrop-blur-xl border border-white text-slate-600 hover:bg-white'
+              }`}
+            >
+              <CategoryIcon size={16} /> {category}
+            </button>
+          );
+        })}
       </div>
 
       <div className="px-4 mb-3">
-        <div className="bg-white border border-gray-100 rounded-3xl p-4 md:p-5 grid grid-cols-1 md:grid-cols-3 gap-4 md:items-center">
+        <div className="bg-white/70 backdrop-blur-xl border border-white/60 rounded-3xl p-4 md:p-5 grid grid-cols-1 md:grid-cols-3 gap-4 md:items-center shadow-sm">
           <div className="flex items-center gap-2 bg-slate-50 rounded-xl px-3 py-3">
             <Filter size={18} className="text-slate-500" />
             <div className="w-full">
@@ -567,7 +664,9 @@ const HomeView = ({
         <p className="font-bold text-gray-500">المفضلة: {favorites.length}</p>
       </div>
 
-      {filteredProducts.length === 0 ? (
+      {isLoadingProducts ? (
+        <ProductsSkeletonGrid />
+      ) : filteredProducts.length === 0 ? (
         <div className="text-center py-20 text-gray-400 font-bold">
           <Package size={48} className="mx-auto mb-4 opacity-20" /> لا توجد منتجات بهذه المواصفات.
         </div>
@@ -581,14 +680,21 @@ const HomeView = ({
               return (
                 <Motion.div
                   layout
-                  initial={{ opacity: 0, scale: 0.9 }}
+                  initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={PAGE_TRANSITION}
                   key={product.id}
-                  className="group bg-white rounded-[1.5rem] border border-gray-100 overflow-hidden flex flex-col shadow-sm hover:shadow-2xl transition-all duration-300"
+                  className="group bg-white/70 backdrop-blur-xl rounded-[1.5rem] border border-white/60 overflow-hidden flex flex-col shadow-sm hover:shadow-2xl transition-all duration-300"
                 >
                   <div className="relative aspect-[4/5] bg-gray-50 overflow-hidden">
-                    <img src={product.image} alt={product.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                    <img
+                      src={product.image}
+                      alt={product.name}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                    />
 
                     <button
                       onClick={(event) => {
@@ -624,7 +730,7 @@ const HomeView = ({
                             showToast('المنتج غير متوفر حالياً', 'error');
                             return;
                           }
-                          dispatchCart({ type: 'ADD_ITEM', payload: product });
+                          onAddToCart(product);
                           showToast('تمت الإضافة للسلة');
                         }}
                         disabled={stock <= 0}
@@ -656,7 +762,7 @@ const HomeView = ({
     </Motion.div>
   );
 };
-const CartView = ({ cart, dispatchCart, navigateTo, siteConfig, showToast, setCheckoutPricing }) => {
+const CartView = ({ cart, dispatchCart, navigateTo, siteConfig, showToast, setCheckoutPricing, onAddToCart }) => {
   const subtotal = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
 
   const configuredCouponCode = (siteConfig.couponCode || '').trim().toLowerCase();
@@ -694,9 +800,10 @@ const CartView = ({ cart, dispatchCart, navigateTo, siteConfig, showToast, setCh
 
   return (
     <Motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={PAGE_TRANSITION}
       className="pb-32 md:pb-12 min-h-screen bg-gray-50 md:bg-white max-w-7xl mx-auto w-full md:pt-10"
     >
       <div className="hidden md:flex justify-between items-end px-6 mb-8">
@@ -732,7 +839,7 @@ const CartView = ({ cart, dispatchCart, navigateTo, siteConfig, showToast, setCh
                     key={item.id}
                     className="bg-white p-3 md:p-6 rounded-2xl flex gap-4 shadow-sm border border-gray-100"
                   >
-                    <img src={item.image} alt={item.name} className="w-24 h-28 md:w-32 md:h-32 object-cover rounded-xl bg-gray-50" />
+                    <img src={item.image} alt={item.name} loading="lazy" decoding="async" className="w-24 h-28 md:w-32 md:h-32 object-cover rounded-xl bg-gray-50" />
                     <div className="flex-1 flex flex-col justify-between py-1">
                       <div className="flex justify-between items-start">
                         <div>
@@ -761,7 +868,7 @@ const CartView = ({ cart, dispatchCart, navigateTo, siteConfig, showToast, setCh
                               showToast('وصلت للكمية المتاحة من هذا المنتج', 'error');
                               return;
                             }
-                            dispatchCart({ type: 'ADD_ITEM', payload: item });
+                            onAddToCart(item);
                           }}
                           className="w-8 h-8 md:w-10 md:h-10 bg-white rounded-lg text-slate-600 shadow-sm font-bold"
                           disabled={item.qty >= stock}
@@ -927,7 +1034,8 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
   }
 
   return (
-    <Motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pb-24 min-h-screen bg-white max-w-4xl mx-auto w-full md:pt-12">
+    <Motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+        transition={PAGE_TRANSITION} className="pb-24 min-h-screen bg-white max-w-4xl mx-auto w-full md:pt-12">
       <div className="hidden md:flex items-center gap-3 mb-8 px-6">
         <button onClick={() => navigateTo('cart')} className="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-full text-slate-600 rotate-180">
           <ChevronRight size={24} />
@@ -1034,7 +1142,7 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
   );
 };
 
-const AdminLogin = ({ showToast }) => {
+const AdminLogin = ({ showToast, onBackToStore }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1100,6 +1208,7 @@ const AdminLogin = ({ showToast }) => {
       <Motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={PAGE_TRANSITION}
         className="w-full max-w-md bg-white/95 backdrop-blur-xl border border-white shadow-2xl rounded-[2rem] p-6 md:p-8"
       >
         <div className="mb-8 text-center">
@@ -1160,7 +1269,13 @@ const AdminLogin = ({ showToast }) => {
             {isSendingReset ? 'جاري إرسال الرابط...' : 'نسيت كلمة المرور؟'}
           </button>
         </form>
-
+        <button
+          type="button"
+          onClick={onBackToStore}
+          className="w-full text-sm font-bold text-slate-600 hover:text-slate-900 py-2 transition"
+        >
+          العودة إلى واجهة المتجر
+        </button>
         {!auth && (
           <div className="mt-4 rounded-2xl bg-orange-50 border border-orange-200 p-3 text-xs font-bold text-orange-700 text-center">
             لا يمكن تسجيل الدخول قبل إكمال متغيرات Firebase في ملف `.env`.
@@ -1182,6 +1297,8 @@ const AdminCMS = ({
   showToast,
   syncStatus,
   adminUser,
+  adminTheme,
+  setAdminTheme,
 }) => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showProductForm, setShowProductForm] = useState(false);
@@ -1191,6 +1308,7 @@ const AdminCMS = ({
   const [orderSearch, setOrderSearch] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
   const [uploadingImage, setUploadingImage] = useState(false);
+  const isDarkMode = adminTheme === 'dark';
 
   const revenue = useMemo(
     () =>
@@ -1306,14 +1424,43 @@ const AdminCMS = ({
   };
 
   return (
-    <Motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pb-24 md:pb-10 min-h-screen bg-gradient-to-br from-slate-100 via-white to-emerald-50/60">
-      <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/90 backdrop-blur-xl">
+    <Motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={PAGE_TRANSITION}
+      className={`admin-cms ${isDarkMode ? 'admin-theme-dark' : 'bg-gradient-to-br from-slate-100 via-white to-emerald-50/60'} pb-24 md:pb-10 min-h-screen`}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap');
+        body { font-family: 'Tajawal', sans-serif; background-color: #f8fafc; margin: 0; padding: 0; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+        input, select, button { -webkit-tap-highlight-color: transparent; }
+        @keyframes cart-shake {
+          0% { transform: translateX(0); }
+          25% { transform: translateX(-2px); }
+          50% { transform: translateX(2px); }
+          75% { transform: translateX(-1px); }
+          100% { transform: translateX(0); }
+        }
+        .animate-cart-shake { animation: cart-shake 0.38s ease-in-out; }
+        @keyframes skeleton-shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .skeleton-shimmer {
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+          animation: skeleton-shimmer 1.2s infinite;
+        }
+      `}</style>
+      <header className={`sticky top-0 z-40 border-b backdrop-blur-xl ${isDarkMode ? "border-slate-700/70 bg-slate-900/80" : "border-slate-200/70 bg-white/90"}`}>
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between md:items-center gap-3">
           <div>
-            <h1 className="text-xl md:text-2xl font-black text-slate-900 flex items-center gap-2">
+            <h1 className="text-xl md:text-2xl font-black admin-title flex items-center gap-2">
               <ShieldCheck className="text-emerald-600" /> لوحة التحكم المركزية
             </h1>
-            <p className="text-xs text-slate-500 font-bold mt-1" dir="ltr">{adminUser?.email || 'admin'}</p>
+            <p className={`text-xs font-bold mt-1 ${isDarkMode ? "text-slate-300" : "text-slate-500"}`} dir="ltr">{adminUser?.email || 'admin'}</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1337,6 +1484,24 @@ const AdminCMS = ({
             >
               {syncStatus === 'online' ? 'Firebase متصل' : syncStatus === 'syncing' ? 'جاري المزامنة' : 'وضع محلي'}
             </span>
+            <div className={`inline-flex items-center rounded-xl border p-1 ${isDarkMode ? 'admin-soft' : 'bg-white border-slate-200'}`}>
+              <button
+                onClick={() => setAdminTheme('dark')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-black inline-flex items-center gap-1 transition ${
+                  isDarkMode ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <MoonStar size={14} /> وضع ليل
+              </button>
+              <button
+                onClick={() => setAdminTheme('light')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-black inline-flex items-center gap-1 transition ${
+                  !isDarkMode ? 'bg-emerald-500 text-white' : 'text-slate-300 hover:bg-slate-800/60'
+                }`}
+              >
+                <SunMedium size={14} /> وضع صباح
+              </button>
+            </div>
             <button
               onClick={() => onLogout()}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-black hover:bg-slate-800 transition"
@@ -1681,7 +1846,7 @@ const AdminCMS = ({
                     const stock = clampStock(product.stock);
                     return (
                       <div key={product.id} className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm group">
-                        <img src={product.image} className="w-full h-40 object-cover bg-gray-50" alt={product.name} />
+                        <img src={product.image} loading="lazy" decoding="async" className="w-full h-40 object-cover bg-gray-50" alt={product.name} />
                         <div className="p-4">
                           <p className="font-bold text-sm truncate mb-1">{product.name}</p>
                           <p className="font-black text-emerald-600 mb-1">{product.price} د.ج</p>
@@ -1734,7 +1899,24 @@ const AdminCMS = ({
                   />
                 </div>
 
-                <div className="pt-6 border-t border-gray-100">
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">رقم واتساب المتجر</label>
+                  <input
+                    type="tel"
+                    dir="ltr"
+                    value={siteConfig.whatsappNumber || ''}
+                    onChange={(event) =>
+                      setSiteConfig({
+                        ...siteConfig,
+                        whatsappNumber: event.target.value,
+                      })
+                    }
+                    placeholder="213555000000"
+                    className="w-full p-4 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all"
+                  />
+                  <p className="text-xs font-bold text-gray-500 mt-2">سيظهر في الزر العائم للتواصل عبر واتساب.</p>
+                </div>                <div className="pt-6 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-2">
                     <label className="block text-sm font-bold text-gray-700">حالة المتجر (إغلاق / فتح)</label>
                     <span
@@ -1884,7 +2066,12 @@ export default function App() {
   const [checkoutPricing, setCheckoutPricing] = useState({ subtotal: 0, discount: 0, total: 0, couponCode: '' });
   const [isRemoteBootstrapped, setIsRemoteBootstrapped] = useState(false);
   const [syncStatus, setSyncStatus] = useState(hasFirebaseConfig ? 'syncing' : 'local');
+  const [adminTheme, setAdminTheme] = useState(() => (readStorage(STORAGE_KEYS.adminTheme, 'light') === 'dark' ? 'dark' : 'light'));
+  const [isCartAnimating, setIsCartAnimating] = useState(false);
+  const cartAnimationTimeoutRef = useRef(null);
+  const audioContextRef = useRef(null);
   const isAdminAuth = Boolean(adminUser);
+  const isProductsLoading = hasFirebaseConfig && !isRemoteBootstrapped;
 
   useEffect(() => {
     if (!auth) {
@@ -1959,6 +2146,16 @@ export default function App() {
   }, [favorites]);
 
   useEffect(() => {
+    writeStorage(STORAGE_KEYS.adminTheme, adminTheme);
+  }, [adminTheme]);
+
+  useEffect(() => () => {
+    if (cartAnimationTimeoutRef.current) {
+      window.clearTimeout(cartAnimationTimeoutRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!hasFirebaseConfig || !isRemoteBootstrapped) return;
 
     let active = true;
@@ -2025,6 +2222,57 @@ export default function App() {
   const navigateTo = (route) => {
     setCurrentRoute(route);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const triggerCartFeedback = () => {
+    setIsCartAnimating(true);
+
+    if (cartAnimationTimeoutRef.current) {
+      window.clearTimeout(cartAnimationTimeoutRef.current);
+    }
+
+    cartAnimationTimeoutRef.current = window.setTimeout(() => {
+      setIsCartAnimating(false);
+    }, 450);
+
+    if (typeof window === 'undefined') return;
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioCtx();
+      }
+
+      const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'triangle';
+      oscillator.frequency.setValueAtTime(640, ctx.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(920, ctx.currentTime + 0.08);
+
+      gainNode.gain.setValueAtTime(0.001, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.09, ctx.currentTime + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.17);
+    } catch {
+      // sound is optional
+    }
+  };
+
+  const handleAddToCart = (item) => {
+    dispatchCart({ type: 'ADD_ITEM', payload: item });
+    triggerCartFeedback();
   };
 
   const handleAdminLogout = async () => {
@@ -2107,13 +2355,7 @@ export default function App() {
     return (
       <div dir="rtl" style={{ fontFamily: "'Tajawal', sans-serif" }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap');`}</style>
-        <MaintenanceView siteName={siteConfig.name} />
-        <button
-          onClick={() => navigateTo('admin')}
-          className="fixed bottom-4 left-4 p-4 opacity-10 hover:opacity-100 transition-opacity bg-slate-900 text-white rounded-full"
-        >
-          <ShieldCheck size={20} />
-        </button>
+        <MaintenanceView siteName={siteConfig.name} onOpenAdmin={() => navigateTo('admin')} />
       </div>
     );
   }
@@ -2129,6 +2371,22 @@ export default function App() {
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
         input, select, button { -webkit-tap-highlight-color: transparent; }
+        @keyframes cart-shake {
+          0% { transform: translateX(0); }
+          25% { transform: translateX(-2px); }
+          50% { transform: translateX(2px); }
+          75% { transform: translateX(-1px); }
+          100% { transform: translateX(0); }
+        }
+        .animate-cart-shake { animation: cart-shake 0.38s ease-in-out; }
+        @keyframes skeleton-shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .skeleton-shimmer {
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+          animation: skeleton-shimmer 1.2s infinite;
+        }
       `}</style>
 
       <Toast toast={toast} />
@@ -2141,14 +2399,15 @@ export default function App() {
             navigateTo={navigateTo}
             cartCount={cartCount}
             isAdminAuth={isAdminAuth}
+            isCartAnimating={isCartAnimating}
             onAdminLogout={handleAdminLogout}
             siteName={siteConfig.name}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             favoritesCount={favorites.length}
           />
-          {currentRoute === 'home' && <MobileHeader title={siteConfig.name} cartCount={cartCount} navigateTo={navigateTo} />}
-          {currentRoute === 'cart' && <MobileHeader title="السلة" cartCount={cartCount} navigateTo={navigateTo} />}
+          {currentRoute === 'home' && <MobileHeader title={siteConfig.name} cartCount={cartCount} navigateTo={navigateTo} isCartAnimating={isCartAnimating} />}
+          {currentRoute === 'cart' && <MobileHeader title="السلة" cartCount={cartCount} navigateTo={navigateTo} isCartAnimating={isCartAnimating} />}
         </>
       )}
 
@@ -2158,7 +2417,7 @@ export default function App() {
             <HomeView
               key="home"
               products={products}
-              dispatchCart={dispatchCart}
+              onAddToCart={handleAddToCart}
               showToast={showToast}
               syncStatus={syncStatus}
               searchQuery={searchQuery}
@@ -2166,6 +2425,7 @@ export default function App() {
               favorites={favorites}
               toggleFavorite={toggleFavorite}
               orders={orders}
+              isLoadingProducts={isProductsLoading}
             />
           )}
 
@@ -2178,6 +2438,7 @@ export default function App() {
               siteConfig={siteConfig}
               showToast={showToast}
               setCheckoutPricing={setCheckoutPricing}
+              onAddToCart={handleAddToCart}
             />
           )}
 
@@ -2200,7 +2461,7 @@ export default function App() {
           )}
 
           {currentRoute === 'admin' && isAuthReady && !isAdminAuth && (
-            <AdminLogin key="login" showToast={showToast} />
+            <AdminLogin key="login" showToast={showToast} onBackToStore={() => navigateTo('home')} />
           )}
 
           {currentRoute === 'admin' && isAuthReady && isAdminAuth && (
@@ -2218,18 +2479,80 @@ export default function App() {
               }}
               adminUser={adminUser}
               syncStatus={syncStatus}
+              adminTheme={adminTheme}
+              setAdminTheme={setAdminTheme}
               showToast={showToast}
             />
           )}
         </AnimatePresence>
       </main>
 
+      {currentRoute !== 'admin' && <FloatingWhatsAppButton phoneNumber={siteConfig.whatsappNumber} />}
       {!isCheckoutOrAdmin && (
-        <BottomNav currentRoute={currentRoute} navigateTo={navigateTo} cartCount={cartCount} />
+        <BottomNav currentRoute={currentRoute} navigateTo={navigateTo} cartCount={cartCount} isCartAnimating={isCartAnimating} />
       )}
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
