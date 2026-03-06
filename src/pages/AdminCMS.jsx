@@ -12,7 +12,11 @@ import {
   Package,
   Palette,
   Plus,
+  Power,
   Ruler,
+  Search,
+  Filter,
+  CalendarDays,
   Settings,
   ShieldCheck,
   ShoppingCart,
@@ -23,11 +27,21 @@ import {
 } from 'lucide-react';
 import { uploadProductImage } from '../services/storeService';
 import { validateImageFile } from '../services/imgbbService';
+import { getOrderDateRange, isWithinDateRange, toDateInputValue } from '../utils/orderDateFilters';
 
 const OrderStatusPill = ({ status, getOrderStatusMeta }) => {
   const meta = getOrderStatusMeta(status);
   return <span className={`text-xs font-black px-3 py-1 rounded-full border ${meta.className}`}>{meta.label}</span>;
 };
+const ORDER_PERIOD_OPTIONS = [
+  { key: 'today', label: '\u0637\u0644\u0628\u064a\u0627\u062a \u0627\u0644\u064a\u0648\u0645' },
+  { key: 'yesterday', label: '\u0637\u0644\u0628\u064a\u0627\u062a \u0627\u0644\u0628\u0627\u0631\u062d\u0629' },
+  { key: 'week', label: '\u0637\u0644\u0628\u064a\u0627\u062a \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639' },
+  { key: 'month', label: '\u0637\u0644\u0628\u064a\u0627\u062a \u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631' },
+  { key: 'all', label: '\u0643\u0644 \u0627\u0644\u0637\u0644\u0628\u064a\u0627\u062a' },
+  { key: 'custom', label: '\u0641\u062a\u0631\u0629 \u0645\u062e\u0635\u0635\u0629' },
+];
+
 const AdminCMS = ({
   orders,
   setOrders,
@@ -79,8 +93,12 @@ const AdminCMS = ({
     variants: { ...DEFAULT_PRODUCT_VARIANTS },
   });
   const [productQuery, setProductQuery] = useState('');
+  const [productCategoryFilter, setProductCategoryFilter] = useState('\u0627\u0644\u0643\u0644');
   const [orderSearch, setOrderSearch] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
+  const [orderPeriodFilter, setOrderPeriodFilter] = useState('today');
+  const [customDateFrom, setCustomDateFrom] = useState(toDateInputValue(new Date()));
+  const [customDateTo, setCustomDateTo] = useState(toDateInputValue(new Date()));
   const [imageUploadState, setImageUploadState] = useState({
     isUploading: false,
     progress: 0,
@@ -89,6 +107,22 @@ const AdminCMS = ({
   });
   const [couponForm, setCouponForm] = useState({ code: '', discount: 10, maxUses: 100, expiresAt: '' });
   const isDarkMode = adminTheme === 'dark';
+
+  const formatMoney = (value) => new Intl.NumberFormat('fr-DZ').format(Number(value) || 0) + ' \u062f.\u062c';
+  const formatOrderDate = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '\u062a\u0627\u0631\u064a\u062e \u063a\u064a\u0631 \u0635\u0627\u0644\u062d';
+    return date.toLocaleString('ar-DZ');
+  };
+
+  const orderDateRange = useMemo(
+    () =>
+      getOrderDateRange(orderPeriodFilter, {
+        customStart: customDateFrom,
+        customEnd: customDateTo,
+      }),
+    [orderPeriodFilter, customDateFrom, customDateTo],
+  );
 
   const revenue = useMemo(
     () =>
@@ -115,29 +149,54 @@ const AdminCMS = ({
 
   const filteredOrders = useMemo(() => {
     const query = orderSearch.trim().toLowerCase();
-    return orders.filter((order) => {
-      const statusOk = orderStatusFilter === 'all' || order.status === orderStatusFilter;
-      const customerWilayaName = (order.customer?.wilaya_name || order.customer?.wilaya || '').toLowerCase();
-      const customerCommuneName = (order.customer?.commune_name || order.customer?.commune || order.customer?.city || '').toLowerCase();
-      const queryOk =
-        !query ||
-        order.customer?.name?.toLowerCase().includes(query) ||
-        order.customer?.phone?.toLowerCase().includes(query) ||
-        customerWilayaName.includes(query) ||
-        customerCommuneName.includes(query);
-      return statusOk && queryOk;
-    });
-  }, [orders, orderSearch, orderStatusFilter]);
+
+    return orders
+      .filter((order) => {
+        const statusOk = orderStatusFilter === 'all' || order.status === orderStatusFilter;
+        const customerWilayaName = (order.customer?.wilaya_name || order.customer?.wilaya || '').toLowerCase();
+        const customerCommuneName = (order.customer?.commune_name || order.customer?.commune || order.customer?.city || '').toLowerCase();
+        const queryOk =
+          !query ||
+          String(order.id || '').toLowerCase().includes(query) ||
+          order.customer?.name?.toLowerCase().includes(query) ||
+          order.customer?.phone?.toLowerCase().includes(query) ||
+          customerWilayaName.includes(query) ||
+          customerCommuneName.includes(query);
+
+        const dateOk =
+          orderPeriodFilter === 'all'
+            ? true
+            : isWithinDateRange(order.date, orderDateRange);
+
+        return statusOk && queryOk && dateOk;
+      })
+      .sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+  }, [orders, orderSearch, orderStatusFilter, orderPeriodFilter, orderDateRange]);
+
+  const filteredOrdersRevenue = useMemo(
+    () =>
+      filteredOrders
+        .filter((order) => order.status !== 'cancelled')
+        .reduce((sum, order) => sum + (Number(order.totalPrice) || 0), 0),
+    [filteredOrders],
+  );
+
+  const filteredOrdersPending = useMemo(
+    () => filteredOrders.filter((order) => order.status === 'pending').length,
+    [filteredOrders],
+  );
 
   const filteredProducts = useMemo(() => {
     const query = productQuery.trim().toLowerCase();
-    if (!query) return products;
-    return products.filter(
-      (product) =>
+    return products.filter((product) => {
+      const queryOk =
+        !query ||
         product.name.toLowerCase().includes(query) ||
-        product.category.toLowerCase().includes(query),
-    );
-  }, [products, productQuery]);
+        product.category.toLowerCase().includes(query);
+      const categoryOk = productCategoryFilter === '\u0627\u0644\u0643\u0644' || product.category === productCategoryFilter;
+      return queryOk && categoryOk;
+    });
+  }, [products, productQuery, productCategoryFilter]);
 
   const adminCoupons = useMemo(
     () => normalizeCoupons(siteConfig.coupons, siteConfig.couponCode, siteConfig.couponDiscount),
@@ -519,30 +578,92 @@ const AdminCMS = ({
           {activeTab === 'orders' && (
             <div className="space-y-6 animate-in fade-in">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <h2 className="text-2xl font-black text-slate-900">إدارة الطلبات</h2>
+                <h2 className="text-2xl font-black text-slate-900 flex items-center gap-2"><CalendarDays size={22} />{'\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0637\u0644\u0628\u064a\u0627\u062a'}</h2>
                 <div className="text-sm font-bold text-gray-500">{filteredOrders.length} طلب</div>
               </div>
 
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                {ORDER_PERIOD_OPTIONS.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setOrderPeriodFilter(option.key)}
+                    className={
+                      'px-3 py-2 rounded-xl text-xs font-black whitespace-nowrap border transition ' +
+                      (orderPeriodFilter === option.key
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50')
+                    }
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              {orderPeriodFilter === 'custom' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">{'\u0645\u0646 \u062a\u0627\u0631\u064a\u062e'}</label>
+                    <input
+                      type="date"
+                      value={customDateFrom}
+                      onChange={(event) => setCustomDateFrom(event.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">{'\u0625\u0644\u0649 \u062a\u0627\u0631\u064a\u062e'}</label>
+                    <input
+                      type="date"
+                      value={customDateTo}
+                      onChange={(event) => setCustomDateTo(event.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  value={orderSearch}
-                  onChange={(event) => setOrderSearch(event.target.value)}
-                  placeholder="بحث بالاسم أو الهاتف أو الولاية"
-                  className="md:col-span-2 bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-                />
-                <select
-                  value={orderStatusFilter}
-                  onChange={(event) => setOrderStatusFilter(event.target.value)}
-                  className="bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-                >
-                  <option value="all">كل الحالات</option>
-                  {ORDER_STATUSES.map((status) => (
-                    <option value={status.key} key={status.key}>
-                      {status.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="md:col-span-2 relative">
+                  <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={orderSearch}
+                    onChange={(event) => setOrderSearch(event.target.value)}
+                    placeholder={'\u0628\u062d\u062b \u0628\u0627\u0644\u0627\u0633\u0645 \u0623\u0648 \u0627\u0644\u0647\u0627\u062a\u0641 \u0623\u0648 \u0627\u0644\u0648\u0644\u0627\u064a\u0629'}
+                    className="w-full bg-white border border-gray-200 rounded-xl pr-9 pl-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                  />
+                </div>
+                <div className="relative">
+                  <Filter size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <select
+                    value={orderStatusFilter}
+                    onChange={(event) => setOrderStatusFilter(event.target.value)}
+                    className="w-full bg-white border border-gray-200 rounded-xl pr-9 pl-3 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                  >
+                    <option value="all">{'\u0643\u0644 \u0627\u0644\u062d\u0627\u0644\u0627\u062a'}</option>
+                    {ORDER_STATUSES.map((status) => (
+                      <option value={status.key} key={status.key}>
+                        {status.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-bold text-slate-500">{'\u0639\u062f\u062f \u0627\u0644\u0637\u0644\u0628\u064a\u0627\u062a'}</p>
+                  <p className="text-xl font-black text-slate-900">{filteredOrders.length}</p>
+                </div>
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-bold text-amber-700">{'\u0642\u064a\u062f \u0627\u0644\u0645\u0639\u0627\u0644\u062c\u0629'}</p>
+                  <p className="text-xl font-black text-amber-800">{filteredOrdersPending}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 col-span-2">
+                  <p className="text-xs font-bold text-emerald-700">{'\u0642\u064a\u0645\u0629 \u0627\u0644\u0637\u0644\u0628\u064a\u0627\u062a'}</p>
+                  <p className="text-xl font-black text-emerald-800">{formatMoney(filteredOrdersRevenue)}</p>
+                </div>
               </div>
 
               {filteredOrders.length === 0 ? (
@@ -558,7 +679,7 @@ const AdminCMS = ({
                           <p className="font-black text-slate-900 text-lg">{order.customer.name}</p>
                           <p className="text-sm text-gray-500 font-bold">{order.customer.wilaya_name || order.customer.wilaya} • {order.customer.commune_name || order.customer.commune || order.customer.city}</p>
                           <p className="text-sm text-gray-500 font-bold">{order.customer.phone}</p>
-                          <p className="text-xs text-gray-400 mt-1">#{String(order.id).slice(-6)} • {new Date(order.date).toLocaleString('ar-DZ')}</p>
+                          <p className="text-xs text-gray-400 mt-1">#{String(order.id).slice(-6)} • {formatOrderDate(order.date)}</p>
                         </div>
                         <div className="flex items-center gap-2">
                           <select
@@ -634,13 +755,24 @@ const AdminCMS = ({
                 </button>
               </div>
 
-              <input
-                type="text"
-                value={productQuery}
-                onChange={(event) => setProductQuery(event.target.value)}
-                placeholder="بحث عن منتج..."
-                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-              />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <input
+                  type="text"
+                  value={productQuery}
+                  onChange={(event) => setProductQuery(event.target.value)}
+                  placeholder={'\u0628\u062d\u062b \u0639\u0646 \u0645\u0646\u062a\u062c...'}
+                  className="md:col-span-2 w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                />
+                <select
+                  value={productCategoryFilter}
+                  onChange={(event) => setProductCategoryFilter(event.target.value)}
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
+                >
+                  {CATEGORIES.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </div>
 
               {showProductForm ? (                <form onSubmit={handleSaveProduct} className="bg-slate-50 p-6 md:p-8 rounded-[2rem] border border-gray-200">
                   <h3 className="font-black text-xl mb-6">{editingProduct ? 'تعديل المنتج' : 'نشر منتج جديد'}</h3>
@@ -880,7 +1012,7 @@ const AdminCMS = ({
                   </div>
                 </form>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
                   {filteredProducts.map((product) => {
                     const stock = clampStock(product.stock);
                     return (
@@ -942,11 +1074,11 @@ const AdminCMS = ({
 
           {activeTab === 'settings' && (
             <div className="space-y-6 animate-in fade-in max-w-2xl">
-              <h2 className="text-2xl font-black text-slate-900 mb-6">إعدادات المتجر الأساسية</h2>
+              <h2 className="text-2xl font-black text-slate-900 mb-6">{'\u0625\u0639\u062f\u0627\u062f\u0627\u062a \u0627\u0644\u0645\u062a\u062c\u0631 \u0627\u0644\u0623\u0633\u0627\u0633\u064a\u0629'}</h2>
 
               <div className="bg-white border border-gray-200 p-6 md:p-8 rounded-[2rem] space-y-8">
                 <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">اسم المتجر</label>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">{'\u0627\u0633\u0645 \u0627\u0644\u0645\u062a\u062c\u0631'}</label>
                   <input
                     type="text"
                     value={siteConfig.name}
@@ -955,49 +1087,65 @@ const AdminCMS = ({
                   />
                 </div>
 
-
                 <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">رقم واتساب المتجر</label>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">{'\u0631\u0642\u0645 \u0648\u0627\u062a\u0633\u0627\u0628 \u0627\u0644\u0645\u062a\u062c\u0631'}</label>
                   <input
                     type="tel"
                     dir="ltr"
                     value={siteConfig.whatsappNumber || ''}
-                    onChange={(event) =>
-                      setSiteConfig({
-                        ...siteConfig,
-                        whatsappNumber: event.target.value,
-                      })
-                    }
+                    onChange={(event) => setSiteConfig({ ...siteConfig, whatsappNumber: event.target.value })}
                     placeholder="213555000000"
                     className="w-full p-4 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all"
                   />
-                  <p className="text-xs font-bold text-gray-500 mt-2">سيظهر في الزر العائم للتواصل عبر واتساب.</p>
+                  <p className="text-xs font-bold text-gray-500 mt-2">{'\u0633\u064a\u0638\u0647\u0631 \u0641\u064a \u0627\u0644\u0632\u0631 \u0627\u0644\u0639\u0627\u0626\u0645 \u0644\u0644\u062a\u0648\u0627\u0635\u0644 \u0639\u0628\u0631 \u0648\u0627\u062a\u0633\u0627\u0628.'}</p>
                 </div>
+
                 <div className="pt-6 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-bold text-gray-700">حالة المتجر (إغلاق / فتح)</label>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-bold ${
-                        siteConfig.isOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'
-                      }`}
-                    >
-                      {siteConfig.isOnline ? 'نشط الآن' : 'مغلق للصيانة'}
+                    <label className="block text-sm font-bold text-gray-700">{'\u062d\u0627\u0644\u0629 \u0627\u0644\u0645\u062a\u062c\u0631 (\u0625\u063a\u0644\u0627\u0642 / \u0641\u062a\u062d)'}</label>
+                    <span className={
+                      'px-3 py-1 rounded-full text-xs font-bold ' +
+                      (siteConfig.isOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700')
+                    }>
+                      {siteConfig.isOnline ? '\u0646\u0634\u0637 \u0627\u0644\u0622\u0646' : '\u0645\u063a\u0644\u0642 \u0644\u0644\u0635\u064a\u0627\u0646\u0629'}
                     </span>
                   </div>
 
                   <button
                     onClick={() => {
                       setSiteConfig({ ...siteConfig, isOnline: !siteConfig.isOnline });
-                      showToast(siteConfig.isOnline ? 'تم إغلاق المتجر للزبائن' : 'تم فتح المتجر للزبائن');
+                      showToast(siteConfig.isOnline ? '\u062a\u0645 \u0625\u063a\u0644\u0627\u0642 \u0627\u0644\u0645\u062a\u062c\u0631 \u0644\u0644\u0632\u0628\u0627\u0626\u0646' : '\u062a\u0645 \u0641\u062a\u062d \u0627\u0644\u0645\u062a\u062c\u0631 \u0644\u0644\u0632\u0628\u0627\u0626\u0646');
                     }}
-                    className={`w-full py-4 rounded-xl font-black flex items-center justify-center gap-2 transition-all ${
-                      siteConfig.isOnline
+                    className={
+                      'w-full py-4 rounded-xl font-black flex items-center justify-center gap-2 transition-all ' +
+                      (siteConfig.isOnline
                         ? 'bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100'
-                        : 'bg-emerald-500 text-white shadow-lg hover:bg-emerald-600'
-                    }`}
+                        : 'bg-emerald-500 text-white shadow-lg hover:bg-emerald-600')
+                    }
                   >
-                    <Power size={20} /> {siteConfig.isOnline ? 'تفعيل وضع الصيانة' : 'فتح المتجر'}
+                    <Power size={20} /> {siteConfig.isOnline ? '\u062a\u0641\u0639\u064a\u0644 \u0648\u0636\u0639 \u0627\u0644\u0635\u064a\u0627\u0646\u0629' : '\u0641\u062a\u062d \u0627\u0644\u0645\u062a\u062c\u0631'}
                   </button>
+                </div>
+
+                <div className="pt-6 border-t border-gray-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-black text-slate-900">{'\u0625\u0638\u0647\u0627\u0631 \u062d\u0642\u0644 \u0627\u0644\u0643\u0648\u0628\u0648\u0646 \u0644\u0644\u0639\u0645\u064a\u0644'}</p>
+                      <p className="text-xs font-bold text-gray-500 mt-1">{'\u064a\u0645\u0643\u0646\u0643 \u0625\u062e\u0641\u0627\u0621 \u062d\u0642\u0644 \u0627\u0644\u0643\u0648\u0628\u0648\u0646 \u0645\u0624\u0642\u062a\u0627\u064b \u0645\u0639 \u0627\u0644\u0627\u062d\u062a\u0641\u0627\u0638 \u0628\u0627\u0644\u0645\u0646\u0637\u0642 \u0627\u0644\u062f\u0627\u062e\u0644\u064a.'}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSiteConfig({ ...siteConfig, showCouponInput: !siteConfig.showCouponInput })}
+                      className={
+                        'px-3 py-2 rounded-xl text-xs font-black border transition ' +
+                        (siteConfig.showCouponInput
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-slate-50 text-slate-600 border-slate-200')
+                      }
+                    >
+                      {siteConfig.showCouponInput ? '\u0638\u0627\u0647\u0631 \u062d\u0627\u0644\u064a\u0627\u064b' : '\u0645\u062e\u0641\u064a \u062d\u0627\u0644\u064a\u0627\u064b'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

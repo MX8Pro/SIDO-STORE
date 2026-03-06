@@ -96,6 +96,7 @@ const DEFAULT_SITE_CONFIG = {
   name: 'أناقة ستور',
   isOnline: true,
   announcement: '',
+  showCouponInput: false,
   couponCode: '',
   couponDiscount: 0,
   coupons: [],
@@ -1118,6 +1119,7 @@ const CartView = ({
   onCouponApplied,
 }) => {
   const subtotal = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.qty, 0), [cart]);
+  const isCouponInputVisible = Boolean(siteConfig.showCouponInput);
 
   const availableCoupons = useMemo(
     () => normalizeCoupons(siteConfig.coupons, siteConfig.couponCode, siteConfig.couponDiscount),
@@ -1128,13 +1130,14 @@ const CartView = ({
   const [appliedCoupon, setAppliedCoupon] = useState(null);
 
   const activeCoupon = useMemo(() => {
+    if (!isCouponInputVisible) return null;
     if (!appliedCoupon || cart.length === 0) return null;
     const linked = availableCoupons.find(
       (coupon) => coupon.id === appliedCoupon.id || normalizeCouponCode(coupon.code) === normalizeCouponCode(appliedCoupon.code),
     );
     if (!linked || !isCouponApplicable(linked)) return null;
     return linked;
-  }, [appliedCoupon, availableCoupons, cart.length]);
+  }, [appliedCoupon, availableCoupons, cart.length, isCouponInputVisible]);
 
   const discountValue = activeCoupon ? Math.round((subtotal * activeCoupon.discount) / 100) : 0;
   const total = Math.max(0, subtotal - discountValue);
@@ -1272,49 +1275,51 @@ const CartView = ({
             <div className="bg-white rounded-3xl p-6 md:p-8 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] md:shadow-xl border border-gray-100 fixed bottom-[70px] md:sticky md:top-28 left-0 w-full md:w-auto z-30 pb-safe md:pb-8">
               <h3 className="hidden md:block font-black text-xl mb-6">ملخص الطلب</h3>
 
-              <div className="mb-4 md:pt-4">
-                <p className="text-xs font-bold text-gray-500 mb-2">كوبون الخصم</p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    dir="ltr"
-                    value={couponInput}
-                    onChange={(event) => setCouponInput(event.target.value)}
-                    placeholder="COUPON"
-                    className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 font-bold text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                  <button onClick={applyCoupon} className="bg-slate-900 text-white px-4 rounded-xl font-bold text-sm">
-                    تطبيق
-                  </button>
-                </div>
-
-                {availableCoupons.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {availableCoupons.slice(0, 3).map((coupon) => {
-                      const disabled = isCouponExpired(coupon) || isCouponExhausted(coupon);
-                      return (
-                        <button
-                          key={coupon.id}
-                          onClick={() => setCouponInput(coupon.code)}
-                          disabled={disabled}
-                          className={`text-[11px] px-2 py-1 rounded-full border font-black ${disabled ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                        >
-                          {coupon.code}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {activeCoupon && (
-                  <div className="mt-2 text-xs font-bold text-emerald-600 flex items-center justify-between">
-                    <span>تم تطبيق {activeCoupon.code}</span>
-                    <button onClick={cancelCoupon} className="text-rose-500">
-                      إلغاء
+              {isCouponInputVisible && (
+                <div className="mb-4 md:pt-4">
+                  <p className="text-xs font-bold text-gray-500 mb-2">كوبون الخصم</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={couponInput}
+                      onChange={(event) => setCouponInput(event.target.value)}
+                      placeholder="COUPON"
+                      className="flex-1 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 font-bold text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <button onClick={applyCoupon} className="bg-slate-900 text-white px-4 rounded-xl font-bold text-sm">
+                      تطبيق
                     </button>
                   </div>
-                )}
-              </div>
+
+                  {availableCoupons.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {availableCoupons.slice(0, 3).map((coupon) => {
+                        const disabled = isCouponExpired(coupon) || isCouponExhausted(coupon);
+                        return (
+                          <button
+                            key={coupon.id}
+                            onClick={() => setCouponInput(coupon.code)}
+                            disabled={disabled}
+                            className={`text-[11px] px-2 py-1 rounded-full border font-black ${disabled ? 'bg-gray-100 text-gray-400 border-gray-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                          >
+                            {coupon.code}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {activeCoupon && (
+                    <div className="mt-2 text-xs font-bold text-emerald-600 flex items-center justify-between">
+                      <span>تم تطبيق {activeCoupon.code}</span>
+                      <button onClick={cancelCoupon} className="text-rose-500">
+                        إلغاء
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="space-y-2 mb-4 md:border-t md:pt-4 border-gray-100">
                 <div className="flex justify-between items-center text-sm font-bold text-gray-500">
@@ -2256,6 +2261,10 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
 
 
 
