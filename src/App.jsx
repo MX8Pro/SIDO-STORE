@@ -15,6 +15,8 @@ import {
   saveProductsRemote,
   saveSiteConfigRemote,
   uploadProductImage,
+  verifyCouponFromRemote,
+  consumeCouponUsageRemote,
 } from './lib/storeService';
 import {
   AlertTriangle,
@@ -24,6 +26,7 @@ import {
   ChevronRight,
   CreditCard,
   Edit3,
+  Eye,
   Filter,
   Heart,
   Home,
@@ -31,6 +34,7 @@ import {
   Lock,
   LogOut,
   Mail,
+  Menu,
   MessageCircle,
   Megaphone,
   MoonStar,
@@ -79,6 +83,15 @@ const ORDER_STATUSES = [
   { key: 'cancelled', label: 'ملغي', className: 'bg-rose-100 text-rose-700 border-rose-200' },
 ];
 
+const ADMIN_TABS = [
+  { key: 'dashboard', label: 'نظرة عامة', icon: LayoutDashboard },
+  { key: 'orders', label: 'الطلبات', icon: ShoppingCart },
+  { key: 'products', label: 'المنتجات', icon: Store },
+  { key: 'marketing', label: 'التسويق', icon: Megaphone },
+  { key: 'coupons', label: 'الكوبونات', icon: BadgePercent },
+  { key: 'settings', label: 'الإعدادات', icon: Settings },
+];
+
 const STORAGE_KEYS = {
   products: 'my_store_products_v2',
   orders: 'my_store_orders_v2',
@@ -97,8 +110,8 @@ const DEFAULT_SITE_CONFIG = {
   whatsappNumber: '',
 };
 
-const CLOTHING_SIZES = ['S', 'M', 'L', 'XL', 'XXL'];
-const SHOE_SIZES = Array.from({ length: 9 }, (_, idx) => String(37 + idx));
+const CLOTHING_SIZES = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
+const SHOE_SIZES = Array.from({ length: 11 }, (_, idx) => String(36 + idx));
 const COLOR_PRESETS = [
   { name: 'أسود', hex: '#111827' },
   { name: 'أبيض', hex: '#F8FAFC' },
@@ -110,6 +123,10 @@ const COLOR_PRESETS = [
   { name: 'وردي', hex: '#EC4899' },
   { name: 'بيج', hex: '#D6C6A5' },
   { name: 'بني', hex: '#92400E' },
+  { name: 'أصفر', hex: '#FACC15' },
+  { name: 'برتقالي', hex: '#F97316' },
+  { name: 'موف', hex: '#7C3AED' },
+  { name: 'تركواز', hex: '#06B6D4' },
 ];
 
 const DEFAULT_PRODUCT_VARIANTS = {
@@ -278,6 +295,7 @@ const normalizeCoupons = (coupons, legacyCode, legacyDiscount) => {
         discount: clampDiscount(coupon?.discount),
         maxUses: clampUses(coupon?.maxUses),
         usedCount: Math.max(0, Number(coupon?.usedCount) || 0),
+        isActive: coupon?.isActive !== false,
         expiresAt,
       };
     })
@@ -297,6 +315,7 @@ const normalizeCoupons = (coupons, legacyCode, legacyDiscount) => {
       discount: fallbackDiscount,
       maxUses: 99999,
       usedCount: 0,
+      isActive: true,
       expiresAt: '',
     },
   ];
@@ -321,20 +340,33 @@ const isCouponExhausted = (coupon) => (Number(coupon?.usedCount) || 0) >= (Numbe
 const isCouponApplicable = (coupon) =>
   Boolean(coupon?.code) &&
   Number(coupon?.discount) > 0 &&
+  coupon?.isActive !== false &&
   !isCouponExpired(coupon) &&
   !isCouponExhausted(coupon);
 
 const normalizeProducts = (items) => {
   if (!Array.isArray(items)) return initialProductsData;
 
-  return items.map((item, index) => ({
-    ...item,
-    id: item.id ?? Date.now() + index,
-    price: Number(item.price) || 0,
-    oldPrice: Number(item.oldPrice) > 0 ? Number(item.oldPrice) : 0,
-    stock: clampStock(item.stock ?? 0),
-    variants: normalizeProductVariants(item.variants),
-  }));
+  return items.map((item, index) => {
+    const images = Array.from(
+      new Set(
+        (Array.isArray(item.images) ? item.images : [item.image])
+          .map((entry) => String(entry || '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    return {
+      ...item,
+      id: item.id ?? Date.now() + index,
+      price: Number(item.price) || 0,
+      oldPrice: Number(item.oldPrice) > 0 ? Number(item.oldPrice) : 0,
+      stock: clampStock(item.stock ?? 0),
+      image: item.image || images[0] || '',
+      images: images.length ? images : item.image ? [item.image] : [],
+      variants: normalizeProductVariants(item.variants),
+    };
+  });
 };
 
 const normalizeOrders = (items) => {
@@ -703,6 +735,80 @@ const OrderStatusPill = ({ status }) => {
   const meta = getOrderStatusMeta(status);
   return <span className={`text-xs font-black px-3 py-1 rounded-full border ${meta.className}`}>{meta.label}</span>;
 };
+
+const ProductDetailsModal = ({ product, selected, setProductSelection, onClose, onAdd }) => {
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const variants = normalizeProductVariants(product.variants);
+  const gallery = Array.isArray(product.images) && product.images.length > 0 ? product.images : [product.image].filter(Boolean);
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+  }, [product.id]);
+
+  return (
+    <AnimatePresence>
+      <Motion.div className="fixed inset-0 z-[9998] bg-slate-900/70 p-4 overflow-y-auto" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+        <Motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.96, opacity: 0 }} className="max-w-3xl mx-auto bg-white rounded-3xl overflow-hidden mt-8">
+          <div className="grid md:grid-cols-2 gap-0">
+            <div className="p-4 border-b md:border-b-0 md:border-l border-slate-100">
+              <img src={gallery[activeImageIndex] || product.image} alt={product.name} className="w-full aspect-square object-cover rounded-2xl bg-slate-50" />
+              {gallery.length > 1 && (
+                <div className="grid grid-cols-5 gap-2 mt-2">
+                  {gallery.map((img, idx) => (
+                    <button key={img + idx} onClick={() => setActiveImageIndex(idx)} className={`rounded-lg overflow-hidden border ${activeImageIndex === idx ? 'border-slate-900' : 'border-slate-200'}`}>
+                      <img src={img} alt={`${product.name}-${idx + 1}`} className="w-full h-14 object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-black text-xl text-slate-900">{product.name}</h3>
+                <button onClick={onClose} className="text-slate-500"><XCircle size={18} /></button>
+              </div>
+              <div>
+                <p className="font-black text-emerald-600 text-2xl">{product.price} د.ج</p>
+                {isProductOnSale(product) && <p className="text-sm text-gray-400 line-through font-bold">{product.oldPrice} د.ج</p>}
+              </div>
+
+              {variants.enableSizes && (
+                <div>
+                  <p className="text-xs font-black text-slate-500 mb-1 inline-flex items-center gap-1"><Ruler size={13} /> المقاس</p>
+                  <div className="flex flex-wrap gap-2">
+                    {variants.sizes.map((size) => (
+                      <button key={size} onClick={() => setProductSelection(product.id, { size })} className={`px-3 py-1.5 rounded-lg border text-xs font-black ${selected.size === size ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'}`}>
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {variants.enableColors && (
+                <div>
+                  <p className="text-xs font-black text-slate-500 mb-1 inline-flex items-center gap-1"><Palette size={13} /> اللون</p>
+                  <div className="flex flex-wrap gap-2">
+                    {variants.colors.map((colorName) => (
+                      <button key={colorName} onClick={() => setProductSelection(product.id, { color: colorName })} className={`px-3 py-1.5 rounded-lg border text-xs font-black ${selected.color === colorName ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'}`}>
+                        {colorName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <button onClick={() => onAdd(product)} disabled={clampStock(product.stock) <= 0} className="w-full bg-slate-900 text-white font-black py-3 rounded-xl disabled:opacity-40">
+                {clampStock(product.stock) <= 0 ? 'غير متوفر' : 'إضافة للسلة'}
+              </button>
+            </div>
+          </div>
+        </Motion.div>
+      </Motion.div>
+    </AnimatePresence>
+  );
+};
+
 const HomeView = ({
   products,
   onAddToCart,
@@ -711,7 +817,6 @@ const HomeView = ({
   setSearchQuery,
   favorites,
   toggleFavorite,
-  orders,
   isLoadingProducts,
   currentRoute,
   navigateTo,
@@ -719,6 +824,7 @@ const HomeView = ({
   const [activeCategory, setActiveCategory] = useState('الكل');
   const [sortBy, setSortBy] = useState('newest');
   const [variantSelections, setVariantSelections] = useState({});
+  const [detailsProduct, setDetailsProduct] = useState(null);
 
   const isOffersPage = currentRoute === ROUTES.offers;
 
@@ -755,8 +861,6 @@ const HomeView = ({
         return [...result].sort((a, b) => Number(b.id) - Number(a.id));
     }
   }, [products, activeCategory, searchQuery, maxPrice, sortBy, isOffersPage]);
-
-  const recentOrders = useMemo(() => orders.slice(0, 3), [orders]);
 
   const setProductSelection = (productId, nextValue) => {
     setVariantSelections((prev) => ({
@@ -828,28 +932,6 @@ const HomeView = ({
           />
         </div>
       </div>
-
-      {recentOrders.length > 0 && !isOffersPage && (
-        <div className="px-4 mb-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-black text-slate-900">آخر طلباتك</h3>
-              <span className="text-xs font-bold text-gray-500">{orders.length} طلب</span>
-            </div>
-            <div className="space-y-3">
-              {recentOrders.map((order) => (
-                <div key={order.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl border border-gray-100">
-                  <div>
-                    <p className="font-black text-slate-900">طلب #{String(order.id).slice(-5)}</p>
-                    <p className="text-xs text-gray-500 font-bold">{new Date(order.date).toLocaleDateString('ar-DZ')}</p>
-                  </div>
-                  <OrderStatusPill status={order.status} />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="px-4 md:hidden mb-4">
         <div className="relative">
@@ -938,8 +1020,6 @@ const HomeView = ({
             {filteredProducts.map((product) => {
               const stock = clampStock(product.stock);
               const isFavorite = favorites.includes(product.id);
-              const variants = normalizeProductVariants(product.variants);
-              const selected = variantSelections[product.id] || {};
               const productOnSale = isProductOnSale(product);
 
               return (
@@ -950,7 +1030,7 @@ const HomeView = ({
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={PAGE_TRANSITION}
                   key={product.id}
-                  className="group bg-white/70 backdrop-blur-xl rounded-[1.5rem] border border-white/60 overflow-hidden flex flex-col shadow-sm hover:shadow-2xl transition-all duration-300"
+                  className="group bg-white/70 backdrop-blur-xl rounded-3xl border border-white/60 overflow-hidden flex flex-col shadow-lg hover:shadow-xl transition-all duration-300"
                 >
                   <div className="relative aspect-[4/5] bg-gray-50 overflow-hidden">
                     <img
@@ -958,7 +1038,7 @@ const HomeView = ({
                       alt={product.name}
                       loading="lazy"
                       decoding="async"
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
                     />
 
                     <button
@@ -971,27 +1051,12 @@ const HomeView = ({
                       <Heart size={16} className={isFavorite ? 'text-rose-500 fill-rose-500' : 'text-slate-400'} />
                     </button>
 
-                    <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-md px-2 py-1 rounded-md text-[10px] md:text-xs font-bold text-slate-800 shadow-sm">
-                      {product.category}
-                    </div>
-
                     {productOnSale && (
                       <div className="absolute bottom-14 left-2 bg-rose-500 text-white px-2 py-1 rounded-md text-[10px] md:text-xs font-black shadow-sm">
                         -{getDiscountPercent(product)}%
                       </div>
                     )}
 
-                    <div
-                      className={`absolute bottom-14 right-2 px-2 py-1 rounded-md text-[10px] md:text-xs font-bold shadow-sm ${
-                        stock === 0
-                          ? 'bg-red-100 text-red-700'
-                          : stock <= 3
-                          ? 'bg-orange-100 text-orange-700'
-                          : 'bg-emerald-100 text-emerald-700'
-                      }`}
-                    >
-                      {stock === 0 ? 'نفد المخزون' : `متوفر: ${stock}`}
-                    </div>
                   </div>
 
                   <div className="p-4 flex flex-col justify-between flex-1 gap-3">
@@ -1003,56 +1068,11 @@ const HomeView = ({
                       )}
                     </div>
 
-                    {variants.enableSizes && (
-                      <div>
-                        <p className="text-[11px] font-black text-slate-500 mb-1 inline-flex items-center gap-1"><Ruler size={12} /> المقاس</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {variants.sizes.map((size) => (
-                            <button
-                              key={size}
-                              onClick={() => setProductSelection(product.id, { size })}
-                              className={`px-2 py-1 rounded-md border text-[11px] font-black ${selected.size === size ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'}`}
-                            >
-                              {size}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {variants.enableColors && (
-                      <div>
-                        <p className="text-[11px] font-black text-slate-500 mb-1 inline-flex items-center gap-1"><Palette size={12} /> اللون</p>
-                        <div className="flex flex-wrap gap-2">
-                          {variants.colors.map((colorName) => {
-                            const preset = COLOR_PRESETS.find((entry) => entry.name === colorName);
-                            const isSelected = selected.color === colorName;
-                            return (
-                              <button
-                                key={colorName}
-                                onClick={() => setProductSelection(product.id, { color: colorName })}
-                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-black ${isSelected ? 'border-slate-900 text-slate-900 bg-slate-50' : 'border-slate-200 text-slate-600 bg-white'}`}
-                              >
-                                <span className="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style={{ backgroundColor: preset?.hex || '#e5e7eb' }} />
-                                {colorName}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
                     <button
-                      onClick={() => handleAddProduct(product)}
-                      disabled={stock <= 0}
-                      className={`w-full text-sm font-bold py-3 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors active:scale-95 ${
-                        stock <= 0
-                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
-                          : 'bg-white/90 backdrop-blur text-slate-900 hover:bg-slate-900 hover:text-white'
-                      }`}
+                      onClick={() => setDetailsProduct(product)}
+                      className="w-full text-sm font-bold py-3 rounded-xl border border-slate-200 text-slate-700 flex items-center justify-center gap-2"
                     >
-                      <Plus size={18} />
-                      <span>{stock <= 0 ? 'غير متوفر' : 'أضف للسلة'}</span>
+                      <Eye size={16} /> عرض التفاصيل
                     </button>
                   </div>
                 </Motion.div>
@@ -1060,6 +1080,19 @@ const HomeView = ({
             })}
           </AnimatePresence>
         </div>
+      )}
+
+      {detailsProduct && (
+        <ProductDetailsModal
+          product={detailsProduct}
+          selected={variantSelections[detailsProduct.id] || {}}
+          setProductSelection={setProductSelection}
+          onClose={() => setDetailsProduct(null)}
+          onAdd={(product) => {
+            handleAddProduct(product);
+            setDetailsProduct(null);
+          }}
+        />
       )}
     </Motion.div>
   );
@@ -1242,7 +1275,7 @@ const CartView = ({
     }
   }, [appliedCoupon, activeCoupon, showToast]);
 
-  const applyCoupon = () => {
+  const applyCoupon = async () => {
     const normalizedInput = normalizeCouponCode(couponInput);
     if (!normalizedInput) {
       showToast('أدخل رمز كوبون صحيح', 'error');
@@ -1261,14 +1294,34 @@ const CartView = ({
       return;
     }
 
+    if (coupon?.isActive === false) {
+      showToast('هذا الكوبون غير متاح حالياً', 'error');
+      return;
+    }
+
     if (isCouponExhausted(coupon)) {
       showToast('تم استهلاك هذا الكوبون بالكامل', 'error');
       return;
     }
 
-    setAppliedCoupon(coupon);
+    const remoteCheck = await verifyCouponFromRemote(normalizedInput);
+    if (!remoteCheck.ok && remoteCheck.reason !== 'unavailable') {
+      if (remoteCheck.reason === 'inactive') {
+        showToast('هذا الكوبون غير متاح حالياً', 'error');
+      } else if (remoteCheck.reason === 'expired') {
+        showToast('الكوبون منتهي الصلاحية (تحقق Firebase)', 'error');
+      } else if (remoteCheck.reason === 'exhausted') {
+        showToast('الكوبون وصل الحد الأقصى للاستخدام', 'error');
+      } else {
+        showToast('تعذر العثور على الكوبون في Firebase', 'error');
+      }
+      return;
+    }
+
+    const validatedCoupon = remoteCheck.ok ? { ...coupon, ...remoteCheck.coupon } : coupon;
+    setAppliedCoupon(validatedCoupon);
     onCouponApplied();
-    showToast(`تم تطبيق خصم ${coupon.discount}% بنجاح`, 'success');
+    showToast(`تم تطبيق خصم ${validatedCoupon.discount}% بنجاح`, 'success');
   };
 
   const cancelCoupon = () => {
@@ -1495,7 +1548,7 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
     }));
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
 
     if (!formData.wilayaCode || !formData.wilayaName || !formData.communeName) {
@@ -1511,7 +1564,7 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
       commune_name: formData.communeName,
     };
 
-    onAddOrder(customerAddressData, cart, {
+    await onAddOrder(customerAddressData, cart, {
       subtotal: subtotalFromCart,
       discount,
       total,
@@ -1809,15 +1862,18 @@ const AdminCMS = ({
     oldPrice: '',
     category: CATEGORIES[1],
     image: '',
+    images: [],
     stock: 10,
     variants: { ...DEFAULT_PRODUCT_VARIANTS },
   });
   const [productQuery, setProductQuery] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
+  const [expandedOrders, setExpandedOrders] = useState({});
   const [uploadingImage, setUploadingImage] = useState(false);
   const [couponForm, setCouponForm] = useState({ code: '', discount: 10, maxUses: 100, expiresAt: '' });
   const isDarkMode = adminTheme === 'dark';
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const revenue = useMemo(
     () =>
@@ -1877,10 +1933,19 @@ const AdminCMS = ({
 
     const normalizedVariants = normalizeProductVariants(productForm.variants);
 
+    const galleryImages = Array.from(
+      new Set(
+        (Array.isArray(productForm.images) ? productForm.images : [productForm.image])
+          .map((entry) => String(entry || '').trim())
+          .filter(Boolean),
+      ),
+    );
+
     const normalizedProduct = {
       ...productForm,
       name: productForm.name.trim(),
-      image: productForm.image.trim(),
+      image: productForm.image.trim() || galleryImages[0] || '',
+      images: galleryImages,
       price: Number(productForm.price) || 0,
       oldPrice: Number(productForm.oldPrice) > 0 ? Number(productForm.oldPrice) : 0,
       stock: clampStock(productForm.stock),
@@ -1917,6 +1982,7 @@ const AdminCMS = ({
       oldPrice: '',
       category: CATEGORIES[1],
       image: '',
+      images: [],
       stock: 10,
       variants: { ...DEFAULT_PRODUCT_VARIANTS },
     });
@@ -1931,16 +1997,26 @@ const AdminCMS = ({
 
 
   const handleUploadProductImage = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
 
     try {
       setUploadingImage(true);
-      const imageUrl = await uploadProductImage(file);
-      setProductForm((prev) => ({ ...prev, image: imageUrl }));
-      showToast('تم رفع الصورة عبر ImgBB بنجاح');
+      const uploadedUrls = [];
+      for (const file of files) {
+        const imageUrl = await uploadProductImage(file);
+        uploadedUrls.push(imageUrl);
+      }
+
+      setProductForm((prev) => {
+        const merged = Array.from(new Set([...(Array.isArray(prev.images) ? prev.images : []), ...uploadedUrls]));
+        return {
+          ...prev,
+          images: merged,
+          image: prev.image || merged[0] || '',
+        };
+      });
+      showToast(`تم رفع ${uploadedUrls.length} صورة عبر ImgBB`);
     } catch {
       showToast('فشل رفع الصورة. تحقق من VITE_IMGBB_API_KEY', 'error');
     } finally {
@@ -1976,6 +2052,7 @@ const AdminCMS = ({
           discount,
           maxUses,
           usedCount: 0,
+          isActive: true,
           expiresAt,
         },
         ...adminCoupons,
@@ -1992,6 +2069,16 @@ const AdminCMS = ({
       coupons: adminCoupons.filter((coupon) => coupon.id !== couponId),
     });
     showToast('تم حذف الكوبون', 'error');
+  };
+
+  const handleToggleCouponActive = (couponId) => {
+    setSiteConfig({
+      ...siteConfig,
+      coupons: adminCoupons.map((coupon) =>
+        coupon.id === couponId ? { ...coupon, isActive: coupon.isActive === false } : coupon,
+      ),
+    });
+    showToast('تم تحديث حالة الكوبون');
   };
 
   const handleOrderStatusChange = (orderId, nextStatus) => {
@@ -2034,11 +2121,19 @@ const AdminCMS = ({
       `}</style>
       <header className={`sticky top-0 z-40 border-b backdrop-blur-xl ${isDarkMode ? "border-slate-700/70 bg-slate-900/80" : "border-slate-200/70 bg-white/90"}`}>
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between md:items-center gap-3">
-          <div>
+          <div className="flex items-center gap-3">
+            <button
+              className="lg:hidden w-10 h-10 rounded-xl border border-slate-200 bg-white/80 backdrop-blur flex items-center justify-center"
+              onClick={() => setIsSidebarOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
+            <div>
             <h1 className="text-xl md:text-2xl font-black admin-title flex items-center gap-2">
               <ShieldCheck className="text-emerald-600" /> لوحة التحكم المركزية
             </h1>
             <p className={`text-xs font-bold mt-1 ${isDarkMode ? "text-slate-300" : "text-slate-500"}`} dir="ltr">{adminUser?.email || 'admin'}</p>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -2091,8 +2186,43 @@ const AdminCMS = ({
         </div>
       </header>
 
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <Motion.div className="fixed inset-0 z-50 lg:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <button className="absolute inset-0 bg-black/40" onClick={() => setIsSidebarOpen(false)} />
+            <Motion.aside initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }} className="absolute right-0 top-0 h-full w-72 bg-white border-l border-slate-200 p-4 shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <p className="font-black text-slate-900">أقسام الإدارة</p>
+                <button onClick={() => setIsSidebarOpen(false)} className="text-slate-500">
+                  <XCircle size={18} />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {ADMIN_TABS.map((tab) => {
+                  const Icon = tab.icon;
+                  return (
+                    <button
+                      key={`mobile-${tab.key}`}
+                      onClick={() => {
+                        setActiveTab(tab.key);
+                        setIsSidebarOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-right transition-colors font-bold ${
+                        activeTab === tab.key ? 'bg-slate-900 text-white' : 'text-slate-600 bg-slate-50'
+                      }`}
+                    >
+                      <Icon size={18} /> {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Motion.aside>
+          </Motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="max-w-7xl mx-auto flex flex-col lg:flex-row mt-6 md:mt-8 px-4 md:px-6 gap-6 md:gap-8">
-        <aside className="lg:w-72 shrink-0">
+        <aside className="hidden lg:block lg:w-72 shrink-0">
           <div className="rounded-3xl border border-slate-200 bg-white/95 backdrop-blur p-3 shadow-sm">
             <div className="rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white p-4 mb-3">
               <div className="flex items-center gap-2 font-black text-sm">
@@ -2102,46 +2232,20 @@ const AdminCMS = ({
             </div>
 
             <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar pb-1 lg:pb-0">
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'dashboard' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <LayoutDashboard size={18} /> نظرة عامة
-              </button>
-              <button
-                onClick={() => setActiveTab('orders')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'orders' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <ShoppingCart size={18} /> الطلبات
-              </button>
-              <button
-                onClick={() => setActiveTab('products')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'products' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Store size={18} /> المنتجات
-              </button>
-              <button
-                onClick={() => setActiveTab('marketing')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'marketing' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Megaphone size={18} /> التسويق
-              </button>
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'settings' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Settings size={18} /> الإعدادات
-              </button>
+              {ADMIN_TABS.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
+                      activeTab === tab.key ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon size={18} /> {tab.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </aside>
@@ -2266,8 +2370,16 @@ const AdminCMS = ({
                       </div>
 
                       <div className="bg-gray-50 border border-gray-100 rounded-xl p-3">
-                        <p className="text-xs font-black text-gray-500 mb-2">المنتجات</p>
-                        <div className="space-y-1">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-black text-gray-500">المنتجات</p>
+                          <button
+                            className="md:hidden text-[11px] font-black text-slate-600"
+                            onClick={() => setExpandedOrders((prev) => ({ ...prev, [order.id]: !prev[order.id] }))}
+                          >
+                            {expandedOrders[order.id] ? 'إخفاء' : 'عرض'}
+                          </button>
+                        </div>
+                        <div className={`space-y-1 ${expandedOrders[order.id] ? 'block' : 'hidden md:block'}`}>
                           {order.items.map((item) => (
                             <div key={`${order.id}-${item.cartKey || buildCartItemKey(item)}`} className="flex items-center justify-between text-sm font-bold text-slate-700">
                               <span>
@@ -2286,7 +2398,7 @@ const AdminCMS = ({
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-4 text-sm font-bold">
+                      <div className={`flex flex-wrap items-center gap-4 text-sm font-bold ${expandedOrders[order.id] ? 'block' : 'hidden md:flex'}`}>
                         <span className="text-gray-500">فرعي: {order.subtotal} د.ج</span>
                         {order.discount > 0 && <span className="text-emerald-600">خصم: -{order.discount} د.ج</span>}
                         {order.couponCode && <span className="text-gray-500" dir="ltr">{order.couponCode}</span>}
@@ -2310,6 +2422,7 @@ const AdminCMS = ({
                       oldPrice: '',
                       category: CATEGORIES[1],
                       image: '',
+                      images: [],
                       stock: 10,
                       variants: { ...DEFAULT_PRODUCT_VARIANTS },
                     });
@@ -2395,24 +2508,38 @@ const AdminCMS = ({
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     <div>
-                      <label className="block text-sm font-bold mb-2">رابط الصورة (URL)</label>
-                      <input
-                        required
-                        type="url"
+                      <label className="block text-sm font-bold mb-2">روابط الصور (واحد بكل سطر)</label>
+                      <textarea
                         dir="ltr"
-                        value={productForm.image}
-                        onChange={(event) => setProductForm({ ...productForm, image: event.target.value })}
+                        rows={4}
+                        value={(Array.isArray(productForm.images) ? productForm.images : []).join('\n')}
+                        onChange={(event) => {
+                          const nextImages = event.target.value
+                            .split('\n')
+                            .map((entry) => entry.trim())
+                            .filter(Boolean);
+                          setProductForm({ ...productForm, images: nextImages, image: nextImages[0] || '' });
+                        }}
                         className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
                       />
-                      <label className="block text-xs font-bold text-gray-500 mt-3 mb-2">أو ارفع صورة مباشرة عبر ImgBB</label>
+                      <label className="block text-xs font-bold text-gray-500 mt-3 mb-2">أو ارفع عدة صور مباشرة عبر ImgBB</label>
                       <input
                         type="file"
                         accept="image/*"
+                        multiple
                         onChange={handleUploadProductImage}
                         disabled={uploadingImage}
                         className="w-full p-2 rounded-xl border border-dashed border-gray-300 bg-white text-xs font-bold"
                       />
                       <p className="text-[11px] text-slate-500 font-bold mt-1">يتطلب المتغير `VITE_IMGBB_API_KEY` في `.env`.</p>
+
+                      {Array.isArray(productForm.images) && productForm.images.length > 0 && (
+                        <div className="grid grid-cols-4 gap-2 mt-3">
+                          {productForm.images.slice(0, 8).map((img, idx) => (
+                            <img key={img + idx} src={img} alt={`preview-${idx + 1}`} className="w-full h-16 object-cover rounded-lg border border-gray-200" />
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-4">
@@ -2454,8 +2581,8 @@ const AdminCMS = ({
                             }
                             className="w-full p-2 rounded-lg border border-gray-300 text-sm font-bold"
                           >
-                            <option value="clothing">مقاسات ملابس (S-XXL)</option>
-                            <option value="shoes">مقاسات أحذية (37-45)</option>
+                            <option value="clothing">مقاسات ملابس (S-5XL)</option>
+                            <option value="shoes">مقاسات أحذية (36-46)</option>
                           </select>
 
                           <div className="flex flex-wrap gap-2">
@@ -2581,6 +2708,7 @@ const AdminCMS = ({
                                   ...product,
                                   stock: clampStock(product.stock),
                                   oldPrice: Number(product.oldPrice) > 0 ? product.oldPrice : '',
+                                  images: Array.isArray(product.images) ? product.images : [product.image].filter(Boolean),
                                   variants: normalizeProductVariants(product.variants),
                                 });
                                 setEditingProduct(product);
@@ -2603,6 +2731,63 @@ const AdminCMS = ({
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+
+          {activeTab === 'coupons' && (
+            <div className="space-y-6 animate-in fade-in max-w-3xl">
+              <h2 className="text-2xl font-black text-slate-900 mb-6">إدارة الكوبونات</h2>
+              <div className="bg-white border border-gray-200 p-6 md:p-8 rounded-[2rem] space-y-6">
+                <h3 className="text-xl font-black text-slate-900">كوبونات الخصم المتقدمة</h3>
+
+                <form onSubmit={handleCreateCoupon} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">رمز الكوبون</label>
+                    <input type="text" dir="ltr" value={couponForm.code} onChange={(event) => setCouponForm({ ...couponForm, code: event.target.value.toUpperCase() })} placeholder="WELCOME10" className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">نسبة الخصم %</label>
+                    <input type="number" min="1" max="90" value={couponForm.discount} onChange={(event) => setCouponForm({ ...couponForm, discount: clampDiscount(event.target.value) })} className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">عدد الاستخدامات المسموحة</label>
+                    <input type="number" min="1" value={couponForm.maxUses} onChange={(event) => setCouponForm({ ...couponForm, maxUses: clampUses(event.target.value) })} className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">تاريخ الانتهاء (اختياري)</label>
+                    <input type="date" value={couponForm.expiresAt} onChange={(event) => setCouponForm({ ...couponForm, expiresAt: event.target.value })} className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900" />
+                  </div>
+
+                  <div className="md:col-span-2 flex gap-3">
+                    <button type="submit" className="bg-slate-900 text-white px-6 py-3 rounded-xl font-black shadow-lg">إنشاء كوبون</button>
+                  </div>
+                </form>
+
+                <div className="space-y-3">
+                  {adminCoupons.map((coupon) => {
+                    const expired = isCouponExpired(coupon);
+                    const exhausted = isCouponExhausted(coupon);
+                    return (
+                      <div key={coupon.id} className="rounded-xl border border-gray-200 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="font-black text-slate-900" dir="ltr">{coupon.code}</p>
+                          <p className="text-xs font-bold text-gray-500">خصم {coupon.discount}% • الاستخدام {coupon.usedCount}/{coupon.maxUses}</p>
+                          <p className={`text-xs font-black ${coupon.isActive === false || expired || exhausted ? 'text-red-600' : 'text-emerald-600'}`}>
+                            {coupon.isActive === false ? 'مخفي' : expired ? 'منتهي الصلاحية' : exhausted ? 'نفد الاستخدام' : 'فعّال'}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => handleToggleCouponActive(coupon.id)} className={`px-3 py-2 rounded-lg text-xs font-black ${coupon.isActive === false ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                            {coupon.isActive === false ? 'تفعيل' : 'إخفاء'}
+                          </button>
+                          <button onClick={() => handleDeleteCoupon(coupon.id)} className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold">حذف</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
 
@@ -2808,7 +2993,7 @@ export default function App() {
   const [cart, dispatchCart] = useReducer(cartReducer, []);
   const [orders, setOrders] = useState(() => normalizeOrders(readStorage(STORAGE_KEYS.orders, [])));
   const [adminUser, setAdminUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(!auth);
+  const [authStatus, setAuthStatus] = useState(auth ? 'loading' : 'ready');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
   const [siteConfig, setSiteConfig] = useState(() => normalizeSiteConfig(readStorage(STORAGE_KEYS.siteConfig, {})));
@@ -2831,18 +3016,28 @@ export default function App() {
   const cartAnimationTimeoutRef = useRef(null);
   const audioContextRef = useRef(null);
   const isAdminAuth = Boolean(adminUser);
+  const isAuthReady = authStatus === 'ready';
   const isProductsLoading = hasFirebaseConfig && !isRemoteBootstrapped;
 
   useEffect(() => {
     if (!auth) {
-      setIsAuthReady(true);
+      setAdminUser(null);
+      setAuthStatus('ready');
       return undefined;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setAdminUser(user);
-      setIsAuthReady(true);
-    });
+    setAuthStatus('loading');
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        setAdminUser(user || null);
+        setAuthStatus('ready');
+      },
+      () => {
+        setAdminUser(null);
+        setAuthStatus('ready');
+      },
+    );
 
     return () => unsubscribe();
   }, []);
@@ -3084,7 +3279,7 @@ export default function App() {
     }
   };
 
-  const handleAddOrder = (customerData, cartItems, pricing) => {
+  const handleAddOrder = async (customerData, cartItems, pricing) => {
     if (!cartItems.length) {
       showToast('السلة فارغة', 'error');
       return;
@@ -3093,6 +3288,27 @@ export default function App() {
     const subtotal = Number(pricing?.subtotal) || cartItems.reduce((sum, item) => sum + item.price * item.qty, 0);
     const discount = Math.min(Number(pricing?.discount) || 0, subtotal);
     const totalPrice = Math.max(0, Number(pricing?.total) || subtotal - discount);
+
+    if (pricing?.couponCode) {
+      try {
+        await consumeCouponUsageRemote({
+          couponCode: pricing.couponCode,
+          couponId: pricing.couponId,
+        });
+      } catch (error) {
+        const code = String(error?.message || '');
+        if (code === 'COUPON_INACTIVE') {
+          showToast('فشل الطلب: الكوبون غير متاح حالياً', 'error');
+        } else if (code === 'COUPON_EXPIRED') {
+          showToast('فشل الطلب: الكوبون منتهي الآن', 'error');
+        } else if (code === 'COUPON_EXHAUSTED') {
+          showToast('فشل الطلب: الكوبون وصل الحد الأقصى', 'error');
+        } else {
+          showToast('تعذر التحقق من الكوبون أثناء تأكيد الطلب', 'error');
+        }
+        return;
+      }
+    }
 
     const newOrder = {
       id: Date.now(),
@@ -3220,7 +3436,6 @@ export default function App() {
               setSearchQuery={setSearchQuery}
               favorites={favorites}
               toggleFavorite={toggleFavorite}
-              orders={orders}
               isLoadingProducts={isProductsLoading}
               currentRoute={currentRoute}
               navigateTo={navigateTo}
