@@ -75,6 +75,10 @@ const verifyCouponFromRemote = async (couponCode) => {
     return { ok: false, reason: 'not_found' };
   }
 
+  if (matchedCoupon?.isActive === false) {
+    return { ok: false, reason: 'inactive', coupon: matchedCoupon };
+  }
+
   const isExpired = Boolean(matchedCoupon?.expiresAt) && new Date(matchedCoupon.expiresAt).getTime() < Date.now();
   if (isExpired) {
     return { ok: false, reason: 'expired', coupon: matchedCoupon };
@@ -113,6 +117,10 @@ const consumeCouponUsageRemote = async ({ couponCode, couponId }) => {
     }
 
     const coupon = coupons[couponIndex];
+    if (coupon?.isActive === false) {
+      throw new Error('COUPON_INACTIVE');
+    }
+
     const isExpired = Boolean(coupon?.expiresAt) && new Date(coupon.expiresAt).getTime() < Date.now();
     if (isExpired) {
       throw new Error('COUPON_EXPIRED');

@@ -34,6 +34,7 @@ import {
   Lock,
   LogOut,
   Mail,
+  Menu,
   MessageCircle,
   Megaphone,
   MoonStar,
@@ -80,6 +81,15 @@ const ORDER_STATUSES = [
   { key: 'shipped', label: 'تم الشحن', className: 'bg-blue-100 text-blue-700 border-blue-200' },
   { key: 'delivered', label: 'تم التسليم', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   { key: 'cancelled', label: 'ملغي', className: 'bg-rose-100 text-rose-700 border-rose-200' },
+];
+
+const ADMIN_TABS = [
+  { key: 'dashboard', label: 'نظرة عامة', icon: LayoutDashboard },
+  { key: 'orders', label: 'الطلبات', icon: ShoppingCart },
+  { key: 'products', label: 'المنتجات', icon: Store },
+  { key: 'marketing', label: 'التسويق', icon: Megaphone },
+  { key: 'coupons', label: 'الكوبونات', icon: BadgePercent },
+  { key: 'settings', label: 'الإعدادات', icon: Settings },
 ];
 
 const STORAGE_KEYS = {
@@ -285,6 +295,7 @@ const normalizeCoupons = (coupons, legacyCode, legacyDiscount) => {
         discount: clampDiscount(coupon?.discount),
         maxUses: clampUses(coupon?.maxUses),
         usedCount: Math.max(0, Number(coupon?.usedCount) || 0),
+        isActive: coupon?.isActive !== false,
         expiresAt,
       };
     })
@@ -304,6 +315,7 @@ const normalizeCoupons = (coupons, legacyCode, legacyDiscount) => {
       discount: fallbackDiscount,
       maxUses: 99999,
       usedCount: 0,
+      isActive: true,
       expiresAt: '',
     },
   ];
@@ -328,6 +340,7 @@ const isCouponExhausted = (coupon) => (Number(coupon?.usedCount) || 0) >= (Numbe
 const isCouponApplicable = (coupon) =>
   Boolean(coupon?.code) &&
   Number(coupon?.discount) > 0 &&
+  coupon?.isActive !== false &&
   !isCouponExpired(coupon) &&
   !isCouponExhausted(coupon);
 
@@ -1017,7 +1030,7 @@ const HomeView = ({
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={PAGE_TRANSITION}
                   key={product.id}
-                  className="group bg-white/70 backdrop-blur-xl rounded-[1.5rem] border border-white/60 overflow-hidden flex flex-col shadow-sm hover:shadow-2xl transition-all duration-300"
+                  className="group bg-white/70 backdrop-blur-xl rounded-3xl border border-white/60 overflow-hidden flex flex-col shadow-lg hover:shadow-xl transition-all duration-300"
                 >
                   <div className="relative aspect-[4/5] bg-gray-50 overflow-hidden">
                     <img
@@ -1025,7 +1038,7 @@ const HomeView = ({
                       alt={product.name}
                       loading="lazy"
                       decoding="async"
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
                     />
 
                     <button
@@ -1281,6 +1294,11 @@ const CartView = ({
       return;
     }
 
+    if (coupon?.isActive === false) {
+      showToast('هذا الكوبون غير متاح حالياً', 'error');
+      return;
+    }
+
     if (isCouponExhausted(coupon)) {
       showToast('تم استهلاك هذا الكوبون بالكامل', 'error');
       return;
@@ -1288,7 +1306,9 @@ const CartView = ({
 
     const remoteCheck = await verifyCouponFromRemote(normalizedInput);
     if (!remoteCheck.ok && remoteCheck.reason !== 'unavailable') {
-      if (remoteCheck.reason === 'expired') {
+      if (remoteCheck.reason === 'inactive') {
+        showToast('هذا الكوبون غير متاح حالياً', 'error');
+      } else if (remoteCheck.reason === 'expired') {
         showToast('الكوبون منتهي الصلاحية (تحقق Firebase)', 'error');
       } else if (remoteCheck.reason === 'exhausted') {
         showToast('الكوبون وصل الحد الأقصى للاستخدام', 'error');
@@ -1849,9 +1869,11 @@ const AdminCMS = ({
   const [productQuery, setProductQuery] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
+  const [expandedOrders, setExpandedOrders] = useState({});
   const [uploadingImage, setUploadingImage] = useState(false);
   const [couponForm, setCouponForm] = useState({ code: '', discount: 10, maxUses: 100, expiresAt: '' });
   const isDarkMode = adminTheme === 'dark';
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const revenue = useMemo(
     () =>
@@ -2030,6 +2052,7 @@ const AdminCMS = ({
           discount,
           maxUses,
           usedCount: 0,
+          isActive: true,
           expiresAt,
         },
         ...adminCoupons,
@@ -2046,6 +2069,16 @@ const AdminCMS = ({
       coupons: adminCoupons.filter((coupon) => coupon.id !== couponId),
     });
     showToast('تم حذف الكوبون', 'error');
+  };
+
+  const handleToggleCouponActive = (couponId) => {
+    setSiteConfig({
+      ...siteConfig,
+      coupons: adminCoupons.map((coupon) =>
+        coupon.id === couponId ? { ...coupon, isActive: coupon.isActive === false } : coupon,
+      ),
+    });
+    showToast('تم تحديث حالة الكوبون');
   };
 
   const handleOrderStatusChange = (orderId, nextStatus) => {
@@ -2088,11 +2121,19 @@ const AdminCMS = ({
       `}</style>
       <header className={`sticky top-0 z-40 border-b backdrop-blur-xl ${isDarkMode ? "border-slate-700/70 bg-slate-900/80" : "border-slate-200/70 bg-white/90"}`}>
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between md:items-center gap-3">
-          <div>
+          <div className="flex items-center gap-3">
+            <button
+              className="lg:hidden w-10 h-10 rounded-xl border border-slate-200 bg-white/80 backdrop-blur flex items-center justify-center"
+              onClick={() => setIsSidebarOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
+            <div>
             <h1 className="text-xl md:text-2xl font-black admin-title flex items-center gap-2">
               <ShieldCheck className="text-emerald-600" /> لوحة التحكم المركزية
             </h1>
             <p className={`text-xs font-bold mt-1 ${isDarkMode ? "text-slate-300" : "text-slate-500"}`} dir="ltr">{adminUser?.email || 'admin'}</p>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -2145,8 +2186,43 @@ const AdminCMS = ({
         </div>
       </header>
 
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <Motion.div className="fixed inset-0 z-50 lg:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <button className="absolute inset-0 bg-black/40" onClick={() => setIsSidebarOpen(false)} />
+            <Motion.aside initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }} className="absolute right-0 top-0 h-full w-72 bg-white border-l border-slate-200 p-4 shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <p className="font-black text-slate-900">أقسام الإدارة</p>
+                <button onClick={() => setIsSidebarOpen(false)} className="text-slate-500">
+                  <XCircle size={18} />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {ADMIN_TABS.map((tab) => {
+                  const Icon = tab.icon;
+                  return (
+                    <button
+                      key={`mobile-${tab.key}`}
+                      onClick={() => {
+                        setActiveTab(tab.key);
+                        setIsSidebarOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-right transition-colors font-bold ${
+                        activeTab === tab.key ? 'bg-slate-900 text-white' : 'text-slate-600 bg-slate-50'
+                      }`}
+                    >
+                      <Icon size={18} /> {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Motion.aside>
+          </Motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="max-w-7xl mx-auto flex flex-col lg:flex-row mt-6 md:mt-8 px-4 md:px-6 gap-6 md:gap-8">
-        <aside className="lg:w-72 shrink-0">
+        <aside className="hidden lg:block lg:w-72 shrink-0">
           <div className="rounded-3xl border border-slate-200 bg-white/95 backdrop-blur p-3 shadow-sm">
             <div className="rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white p-4 mb-3">
               <div className="flex items-center gap-2 font-black text-sm">
@@ -2156,54 +2232,20 @@ const AdminCMS = ({
             </div>
 
             <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar pb-1 lg:pb-0">
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'dashboard' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <LayoutDashboard size={18} /> نظرة عامة
-              </button>
-              <button
-                onClick={() => setActiveTab('orders')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'orders' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <ShoppingCart size={18} /> الطلبات
-              </button>
-              <button
-                onClick={() => setActiveTab('products')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'products' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Store size={18} /> المنتجات
-              </button>
-              <button
-                onClick={() => setActiveTab('marketing')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'marketing' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Megaphone size={18} /> التسويق
-              </button>
-              <button
-                onClick={() => setActiveTab('coupons')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'coupons' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <BadgePercent size={18} /> الكوبونات
-              </button>
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'settings' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Settings size={18} /> الإعدادات
-              </button>
+              {ADMIN_TABS.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
+                      activeTab === tab.key ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon size={18} /> {tab.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </aside>
@@ -2328,8 +2370,16 @@ const AdminCMS = ({
                       </div>
 
                       <div className="bg-gray-50 border border-gray-100 rounded-xl p-3">
-                        <p className="text-xs font-black text-gray-500 mb-2">المنتجات</p>
-                        <div className="space-y-1">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-black text-gray-500">المنتجات</p>
+                          <button
+                            className="md:hidden text-[11px] font-black text-slate-600"
+                            onClick={() => setExpandedOrders((prev) => ({ ...prev, [order.id]: !prev[order.id] }))}
+                          >
+                            {expandedOrders[order.id] ? 'إخفاء' : 'عرض'}
+                          </button>
+                        </div>
+                        <div className={`space-y-1 ${expandedOrders[order.id] ? 'block' : 'hidden md:block'}`}>
                           {order.items.map((item) => (
                             <div key={`${order.id}-${item.cartKey || buildCartItemKey(item)}`} className="flex items-center justify-between text-sm font-bold text-slate-700">
                               <span>
@@ -2348,7 +2398,7 @@ const AdminCMS = ({
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-4 text-sm font-bold">
+                      <div className={`flex flex-wrap items-center gap-4 text-sm font-bold ${expandedOrders[order.id] ? 'block' : 'hidden md:flex'}`}>
                         <span className="text-gray-500">فرعي: {order.subtotal} د.ج</span>
                         {order.discount > 0 && <span className="text-emerald-600">خصم: -{order.discount} د.ج</span>}
                         {order.couponCode && <span className="text-gray-500" dir="ltr">{order.couponCode}</span>}
@@ -2531,8 +2581,8 @@ const AdminCMS = ({
                             }
                             className="w-full p-2 rounded-lg border border-gray-300 text-sm font-bold"
                           >
-                            <option value="clothing">مقاسات ملابس (S-XXL)</option>
-                            <option value="shoes">مقاسات أحذية (37-45)</option>
+                            <option value="clothing">مقاسات ملابس (S-5XL)</option>
+                            <option value="shoes">مقاسات أحذية (36-46)</option>
                           </select>
 
                           <div className="flex flex-wrap gap-2">
@@ -2723,9 +2773,16 @@ const AdminCMS = ({
                         <div className="space-y-1">
                           <p className="font-black text-slate-900" dir="ltr">{coupon.code}</p>
                           <p className="text-xs font-bold text-gray-500">خصم {coupon.discount}% • الاستخدام {coupon.usedCount}/{coupon.maxUses}</p>
-                          <p className={`text-xs font-black ${expired || exhausted ? 'text-red-600' : 'text-emerald-600'}`}>{expired ? 'منتهي الصلاحية' : exhausted ? 'نفد الاستخدام' : 'فعّال'}</p>
+                          <p className={`text-xs font-black ${coupon.isActive === false || expired || exhausted ? 'text-red-600' : 'text-emerald-600'}`}>
+                            {coupon.isActive === false ? 'مخفي' : expired ? 'منتهي الصلاحية' : exhausted ? 'نفد الاستخدام' : 'فعّال'}
+                          </p>
                         </div>
-                        <button onClick={() => handleDeleteCoupon(coupon.id)} className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold">حذف</button>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => handleToggleCouponActive(coupon.id)} className={`px-3 py-2 rounded-lg text-xs font-black ${coupon.isActive === false ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                            {coupon.isActive === false ? 'تفعيل' : 'إخفاء'}
+                          </button>
+                          <button onClick={() => handleDeleteCoupon(coupon.id)} className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold">حذف</button>
+                        </div>
                       </div>
                     );
                   })}
@@ -2936,7 +2993,7 @@ export default function App() {
   const [cart, dispatchCart] = useReducer(cartReducer, []);
   const [orders, setOrders] = useState(() => normalizeOrders(readStorage(STORAGE_KEYS.orders, [])));
   const [adminUser, setAdminUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(!auth);
+  const [authStatus, setAuthStatus] = useState(auth ? 'loading' : 'ready');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
   const [siteConfig, setSiteConfig] = useState(() => normalizeSiteConfig(readStorage(STORAGE_KEYS.siteConfig, {})));
@@ -2959,18 +3016,28 @@ export default function App() {
   const cartAnimationTimeoutRef = useRef(null);
   const audioContextRef = useRef(null);
   const isAdminAuth = Boolean(adminUser);
+  const isAuthReady = authStatus === 'ready';
   const isProductsLoading = hasFirebaseConfig && !isRemoteBootstrapped;
 
   useEffect(() => {
     if (!auth) {
-      setIsAuthReady(true);
+      setAdminUser(null);
+      setAuthStatus('ready');
       return undefined;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setAdminUser(user);
-      setIsAuthReady(true);
-    });
+    setAuthStatus('loading');
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        setAdminUser(user || null);
+        setAuthStatus('ready');
+      },
+      () => {
+        setAdminUser(null);
+        setAuthStatus('ready');
+      },
+    );
 
     return () => unsubscribe();
   }, []);
@@ -3230,7 +3297,9 @@ export default function App() {
         });
       } catch (error) {
         const code = String(error?.message || '');
-        if (code === 'COUPON_EXPIRED') {
+        if (code === 'COUPON_INACTIVE') {
+          showToast('فشل الطلب: الكوبون غير متاح حالياً', 'error');
+        } else if (code === 'COUPON_EXPIRED') {
           showToast('فشل الطلب: الكوبون منتهي الآن', 'error');
         } else if (code === 'COUPON_EXHAUSTED') {
           showToast('فشل الطلب: الكوبون وصل الحد الأقصى', 'error');
@@ -3425,6 +3494,7 @@ export default function App() {
           {currentRoute === ROUTES.admin && isAuthReady && isAdminAuth && (
             <AdminCMS
               key="admin"
+              orders={orders}
               setOrders={setOrders}
               products={products}
               setProducts={setProducts}
