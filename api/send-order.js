@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 12;
 const ORDER_MAX_ITEMS = 30;
@@ -8,11 +9,15 @@ const rateLimitStore = globalThis.__sendOrderRateLimitStore || new Map();
 globalThis.__sendOrderRateLimitStore = rateLimitStore;
 
 const escapeHtml = (value = '') =>
+=======
+﻿const escapeHtml = (value = '') =>
+>>>>>>> c9163621f80e713064161d4908b8a019f34ed884
   String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
 
+<<<<<<< HEAD
 const sanitizeText = (value, maxLength = 120) =>
   String(value || '')
     .replace(/\s+/g, ' ')
@@ -233,6 +238,29 @@ const formatOrderMessage = (order) => {
   ]
     .filter(Boolean)
     .join('\n');
+=======
+const formatOrderMessage = (order) => {
+  const customer = order?.customer || {};
+  const items = Array.isArray(order?.items) ? order.items : [];
+
+  const itemsText = items
+    .map((item) => `• ${escapeHtml(item.name)} × ${item.qty}`)
+    .join('\n');
+
+  return [
+    '🛒 <b>طلب جديد من المتجر</b>',
+    '',
+    `<b>الاسم:</b> ${escapeHtml(customer.name || '-')}`,
+    `<b>الهاتف:</b> ${escapeHtml(customer.phone || '-')}`,
+    `<b>الولاية:</b> ${escapeHtml(customer.wilaya_name || customer.wilaya || '-')}`,
+    `<b>البلدية:</b> ${escapeHtml(customer.commune_name || customer.commune || customer.city || '-')}`,
+    '',
+    '<b>المنتجات:</b>',
+    itemsText || '-',
+    '',
+    `<b>الإجمالي:</b> ${Number(order?.totalPrice || 0)} د.ج`,
+  ].join('\n');
+>>>>>>> c9163621f80e713064161d4908b8a019f34ed884
 };
 
 export default async function handler(req, res) {
@@ -240,6 +268,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+<<<<<<< HEAD
   const clientIp = getClientIp(req);
   if (isRateLimited(clientIp)) {
     return res.status(429).json({ error: 'Too many requests, please retry later' });
@@ -263,6 +292,25 @@ export default async function handler(req, res) {
 
   try {
     const message = formatOrderMessage(validation.value);
+=======
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+
+  if (!botToken || !chatId) {
+    return res.status(500).json({ error: 'Missing Telegram configuration' });
+  }
+
+  try {
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    const order = body?.order;
+
+    if (!order) {
+      return res.status(400).json({ error: 'Order payload is required' });
+    }
+
+    const message = formatOrderMessage(order);
+
+>>>>>>> c9163621f80e713064161d4908b8a019f34ed884
     const telegramResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -275,17 +323,35 @@ export default async function handler(req, res) {
     });
 
     const telegramResult = await telegramResponse.json();
+<<<<<<< HEAD
     if (!telegramResponse.ok || !telegramResult?.ok) {
       console.error('Telegram API error', {
         status: telegramResponse.status,
         description: telegramResult?.description || null,
       });
       return res.status(502).json({ error: 'Failed to deliver order notification' });
+=======
+
+    if (!telegramResponse.ok || !telegramResult?.ok) {
+      return res.status(502).json({
+        error: 'Telegram API failed',
+        details: telegramResult,
+      });
+>>>>>>> c9163621f80e713064161d4908b8a019f34ed884
     }
 
     return res.status(200).json({ ok: true });
   } catch (error) {
+<<<<<<< HEAD
     console.error('send-order failed', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
+=======
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: String(error?.message || error),
+    });
+  }
+}
+>>>>>>> c9163621f80e713064161d4908b8a019f34ed884
