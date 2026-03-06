@@ -1,94 +1,78 @@
-﻿# My Store - Production Setup (Firebase + Telegram + Vercel)
+﻿# STORE-DZ (Vite + React + Firebase + ImgBB + Vercel)
 
-هذا المشروع جاهز الآن للعمل بطريقتين:
+متجر إلكتروني باللغة العربية (ملائم للسوق الجزائري) مع لوحة إدارة، حفظ بيانات عبر Firebase Firestore، ورفع صور المنتجات عبر ImgBB.
 
-1. وضع محلي (Local): بدون Firebase، البيانات تُحفظ في المتصفح فقط.
-2. وضع سحابي (Cloud): مع Firebase Firestore + Storage + إشعارات تيليجرام.
+## أهم النقاط
+- **ImgBB محفوظ كما هو** لرفع صور المنتجات (بدون Firebase Storage).
+- واجهة مستخدم + واجهة أدمن محسّنة.
+- API آمن لإرسال الطلبات إلى Telegram (`/api/send-order`).
+- تحميل بيانات الولايات/البلديات بشكل **lazy** (لا تُحمّل مباشرة في الحزمة الأساسية).
+- فصل أفضل للكود إلى:
+  - `src/pages`
+  - `src/components`
+  - `src/hooks`
+  - `src/services`
+  - `src/utils`
 
-## 1) إنشاء مشروع Firebase
+## المتطلبات
+- Node.js 18+
+- حساب Firebase (Firestore + Authentication)
+- مفتاح ImgBB API
+- Vercel (للنشر + API)
 
-- ادخل إلى [Firebase Console](https://console.firebase.google.com/).
-- أنشئ مشروع جديد.
-- فعّل Firestore Database.
-- فعّل Storage.
-- من Project settings > General > Your apps:
-  - أنشئ Web App.
-  - انسخ مفاتيح التهيئة.
-
-## 2) إعداد متغيرات البيئة
-
-انسخ الملف:
+## متغيرات البيئة
+أنشئ ملف `.env` محليًا انطلاقًا من المثال:
 
 ```bash
 cp .env.example .env
 ```
 
-املأ القيم في `.env`:
+القيم المطلوبة في `.env`:
 
-- `VITE_FIREBASE_*` من إعدادات Firebase Web App.
-- `TELEGRAM_BOT_TOKEN` و `TELEGRAM_CHAT_ID` (تُستخدم على Vercel API فقط).
+```env
+VITE_FIREBASE_API_KEY=
+VITE_FIREBASE_AUTH_DOMAIN=
+VITE_FIREBASE_PROJECT_ID=
+VITE_FIREBASE_MESSAGING_SENDER_ID=
+VITE_FIREBASE_APP_ID=
+VITE_IMGBB_API_KEY=
 
-## 3) إنشاء بوت تيليجرام وربطه بالموقع
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
 
-- أنشئ بوت عبر `@BotFather` وخذ `BOT_TOKEN`.
-- احصل على `CHAT_ID` (يمكن عبر `@userinfobot` أو API updates).
-- أضف القيم في Vercel Environment Variables (وليس في كود الواجهة).
+ملاحظة:
+- متغيرات `TELEGRAM_*` يجب ضبطها في بيئة Vercel للمشروع.
+- ملف `.env` غير متعقب في Git.
 
-المشروع يستخدم endpoint آمن:
-
-- `POST /api/send-order`
-- التوكن يبقى على السيرفر فقط.
-
-## 4) تشغيل المشروع محليًا
-
+## التشغيل محليًا
 ```bash
 npm install
 npm run dev
 ```
 
-## 5) النشر على Vercel
-
-- ارفع المشروع إلى GitHub.
-- اربطه بـ Vercel.
-- أضف نفس Environment Variables داخل Vercel.
-- نفّذ Deploy.
-
-تم تجهيز `vercel.json` ليدعم React SPA + API routes.
-
-## 6) ربط الدومين
-
-- اشترِ Domain من أي مزود.
-- من Vercel > Project > Domains أضف الدومين.
-- عدّل DNS records كما يعرض Vercel.
-
-## أمان Firebase (مهم)
-
-### Firestore Rules (مبدئيًا)
-
-```txt
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /store_data/{docId} {
-      allow read: if true;
-      allow write: if request.auth != null;
-    }
-  }
-}
+## فحص الجودة
+```bash
+npm run lint
+npm run build
 ```
 
-### Storage Rules (مبدئيًا)
+## الأمان في `/api/send-order`
+الـ endpoint يتضمن:
+- تحقق قوي من payload (العميل/المنتجات/الإجمالي).
+- Rate limiting بسيط بالذاكرة لكل IP.
+- منع الطلبات الفارغة أو غير الصالحة.
+- رسائل خطأ واضحة وآمنة (بدون تسريب تفاصيل حساسة).
 
-```txt
-rules_version = '2';
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /products/{allPaths=**} {
-      allow read: if true;
-      allow write: if request.auth != null;
-    }
-  }
-}
-```
+## ملاحظات الرفع عبر ImgBB
+- يوجد تحقق من نوع الصورة والحجم قبل الرفع.
+- دعم progress أثناء الرفع.
+- حالات واضحة للنجاح/الفشل داخل لوحة الأدمن.
+- الحد الافتراضي لحجم الصورة: `8MB`.
 
-ملاحظة: الأفضل لاحقًا إضافة Firebase Authentication للإدارة بدل كلمة سر ثابتة.
+## النشر على Vercel
+1. ارفع المشروع إلى GitHub.
+2. اربطه بـ Vercel.
+3. أضف متغيرات البيئة في إعدادات Vercel.
+4. نفّذ Deploy.
+

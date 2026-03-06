@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+﻿import React, { Suspense, lazy, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { motion as Motion, AnimatePresence } from 'framer-motion';
 import {
   onAuthStateChanged,
@@ -6,7 +6,6 @@ import {
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
-import algeriaCitiesData from './data/algeria_cities.json';
 import { auth } from './lib/firebase';
 import {
   hasFirebaseConfig,
@@ -14,8 +13,14 @@ import {
   saveOrdersRemote,
   saveProductsRemote,
   saveSiteConfigRemote,
-  uploadProductImage,
-} from './lib/storeService';
+} from './services/storeService';
+import { sendOrderNotification } from './services/orderApi';
+import { readStorage, writeStorage } from './utils/storage';
+import { validateCustomerData, validateStockAvailability } from './utils/checkoutValidation';
+import { getWilayaNameByCode } from './utils/algeriaLocations';
+import { useAlgeriaLocations } from './hooks/useAlgeriaLocations';
+import { useToast } from './hooks/useToast';
+import Toast from './components/Toast';
 import {
   AlertTriangle,
   ArrowUpDown,
@@ -158,72 +163,6 @@ const initialProductsData = [
   },
   { id: 4, name: 'ساعة يد كلاسيكية', price: 3200, category: 'إكسسوارات', stock: 15, image: 'https://images.unsplash.com/photo-1524592094714-0f0654e20314?auto=format&fit=crop&w=800&q=80' },
 ];
-const ALGERIA_CITIES = Array.isArray(algeriaCitiesData) ? algeriaCitiesData : [];
-
-const WILAYA_OPTIONS = Object.values(
-  ALGERIA_CITIES.reduce((acc, item) => {
-    const wilayaCode = String(item.wilaya_code ?? '').padStart(2, '0');
-    if (!wilayaCode || !item.wilaya_name) return acc;
-
-    if (!acc[wilayaCode]) {
-      acc[wilayaCode] = {
-        wilaya_code: wilayaCode,
-        wilaya_name: item.wilaya_name,
-      };
-    }
-
-    return acc;
-  }, {}),
-).sort((a, b) => a.wilaya_code.localeCompare(b.wilaya_code, 'en'));
-
-const COMMUNES_BY_WILAYA = ALGERIA_CITIES.reduce((acc, item) => {
-  const wilayaCode = String(item.wilaya_code ?? '').padStart(2, '0');
-  if (!wilayaCode || !item.commune_name) return acc;
-
-  if (!acc[wilayaCode]) {
-    acc[wilayaCode] = [];
-  }
-
-  if (!acc[wilayaCode].some((commune) => commune.commune_name === item.commune_name)) {
-    acc[wilayaCode].push({
-      id: item.id,
-      commune_name: item.commune_name,
-      daira_name: item.daira_name,
-    });
-  }
-
-  return acc;
-}, {});
-
-Object.keys(COMMUNES_BY_WILAYA).forEach((wilayaCode) => {
-  COMMUNES_BY_WILAYA[wilayaCode].sort((a, b) => a.commune_name.localeCompare(b.commune_name, 'ar'));
-});
-
-const DEFAULT_WILAYA_CODE = WILAYA_OPTIONS[0]?.wilaya_code || '';
-
-const getWilayaNameByCode = (wilayaCode) =>
-  WILAYA_OPTIONS.find((wilaya) => wilaya.wilaya_code === wilayaCode)?.wilaya_name || '';
-
-const readStorage = (key, fallbackValue) => {
-  if (typeof window === 'undefined') return fallbackValue;
-  try {
-    const rawValue = window.localStorage.getItem(key);
-    if (!rawValue) return fallbackValue;
-    return JSON.parse(rawValue);
-  } catch {
-    return fallbackValue;
-  }
-};
-
-const writeStorage = (key, value) => {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // no-op
-  }
-};
-
 const clampStock = (value) => Math.max(0, Number(value) || 0);
 const clampDiscount = (value) => Math.min(90, Math.max(0, Number(value) || 0));
 const normalizeCouponCode = (value) =>
@@ -398,34 +337,6 @@ const cartReducer = (state, action) => {
       return state;
   }
 };
-const Toast = ({ toast }) => (
-  <AnimatePresence>
-    {toast.show && (
-      <Motion.div
-        key="toast"
-        initial={{ opacity: 0, y: -50 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={PAGE_TRANSITION}
-        exit={{ opacity: 0, y: -50 }}
-        className="fixed top-4 left-1/2 transform -translate-x-1/2 z-[9999] flex justify-center pointer-events-none"
-      >
-        <div
-          className={`px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 text-sm font-bold text-white ${
-            toast.type === 'error' ? 'bg-red-600' : toast.type === 'success' ? 'bg-emerald-600' : 'bg-slate-900'
-          }`}
-        >
-          {toast.type === 'error' ? (
-            <XCircle size={18} />
-          ) : (
-            <CheckCircle size={18} className="text-emerald-100" />
-          )}
-          {toast.message}
-        </div>
-      </Motion.div>
-    )}
-  </AnimatePresence>
-);
-
 const AnnouncementBar = ({ text }) => {
   if (!text) return null;
   return <div className="bg-emerald-500 text-white text-xs md:text-sm font-bold py-2 px-4 text-center">{text}</div>;
@@ -1228,19 +1139,7 @@ const CartView = ({
   const discountValue = activeCoupon ? Math.round((subtotal * activeCoupon.discount) / 100) : 0;
   const total = Math.max(0, subtotal - discountValue);
 
-  useEffect(() => {
-    if (cart.length === 0) {
-      setAppliedCoupon(null);
-      setCouponInput('');
-    }
-  }, [cart.length]);
 
-  useEffect(() => {
-    if (appliedCoupon && !activeCoupon) {
-      setAppliedCoupon(null);
-      showToast('تم إلغاء الكوبون تلقائياً لانتهاء الصلاحية أو نفاد الاستخدام', 'error');
-    }
-  }, [appliedCoupon, activeCoupon, showToast]);
 
   const applyCoupon = () => {
     const normalizedInput = normalizeCouponCode(couponInput);
@@ -1273,6 +1172,7 @@ const CartView = ({
 
   const cancelCoupon = () => {
     setAppliedCoupon(null);
+    setCouponInput('');
     showToast('تم إلغاء الكوبون', 'success');
   };
 
@@ -1459,24 +1359,33 @@ const CartView = ({
 };
 
 const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
-  const [formData, setFormData] = useState(() => {
-    const initialWilayaCode = DEFAULT_WILAYA_CODE;
-    const initialWilayaName = getWilayaNameByCode(initialWilayaCode);
-    const initialCommunes = COMMUNES_BY_WILAYA[initialWilayaCode] || [];
-
-    return {
-      name: '',
-      phone: '',
-      wilayaCode: initialWilayaCode,
-      wilayaName: initialWilayaName,
-      communeName: initialCommunes[0]?.commune_name || '',
-    };
+  const { locations, isLoading: isLocationsLoading, error: locationsError } = useAlgeriaLocations(true);
+  const { wilayaOptions, communesByWilaya, defaultWilayaCode } = locations;
+  const [formError, setFormError] = useState('');
+  const [formData, setFormData] = useState({
+    name: '',
+    phone: '',
+    wilayaCode: '',
+    wilayaName: '',
+    communeName: '',
   });
 
+  const effectiveWilayaCode = formData.wilayaCode || defaultWilayaCode;
+  const effectiveWilayaName = formData.wilayaName || getWilayaNameByCode(locations, effectiveWilayaCode);
+
   const communesForSelectedWilaya = useMemo(
-    () => COMMUNES_BY_WILAYA[formData.wilayaCode] || [],
-    [formData.wilayaCode],
+    () => communesByWilaya[effectiveWilayaCode] || [],
+    [communesByWilaya, effectiveWilayaCode],
   );
+
+  const effectiveCommuneName = useMemo(() => {
+    if (!formData.communeName) {
+      return communesForSelectedWilaya[0]?.commune_name || '';
+    }
+
+    const hasCurrentCommune = communesForSelectedWilaya.some((entry) => entry.commune_name === formData.communeName);
+    return hasCurrentCommune ? formData.communeName : communesForSelectedWilaya[0]?.commune_name || '';
+  }, [communesForSelectedWilaya, formData.communeName]);
 
   const subtotalFromCart = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
   const discount = Math.min(Number(checkoutPricing.discount) || 0, subtotalFromCart);
@@ -1484,8 +1393,8 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
 
   const handleWilayaChange = (event) => {
     const nextWilayaCode = event.target.value;
-    const nextWilayaName = getWilayaNameByCode(nextWilayaCode);
-    const nextCommunes = COMMUNES_BY_WILAYA[nextWilayaCode] || [];
+    const nextWilayaName = getWilayaNameByCode(locations, nextWilayaCode);
+    const nextCommunes = communesByWilaya[nextWilayaCode] || [];
 
     setFormData((prev) => ({
       ...prev,
@@ -1498,20 +1407,20 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
   const handleSubmit = (event) => {
     event.preventDefault();
 
-    if (!formData.wilayaCode || !formData.wilayaName || !formData.communeName) {
+    const validation = validateCustomerData({
+      ...formData,
+      wilayaCode: effectiveWilayaCode,
+      wilayaName: effectiveWilayaName,
+      communeName: effectiveCommuneName,
+    });
+    if (!validation.ok) {
+      setFormError(validation.message);
       return;
     }
 
-    const customerAddressData = {
-      ...formData,
-      wilaya: formData.wilayaName,
-      commune: formData.communeName,
-      city: formData.communeName,
-      wilaya_name: formData.wilayaName,
-      commune_name: formData.communeName,
-    };
+    setFormError('');
 
-    onAddOrder(customerAddressData, cart, {
+    onAddOrder(validation.value, cart, {
       subtotal: subtotalFromCart,
       discount,
       total,
@@ -1534,8 +1443,12 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
   }
 
   return (
-    <Motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-        transition={PAGE_TRANSITION} className="pb-24 min-h-screen bg-white max-w-4xl mx-auto w-full md:pt-12">
+    <Motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={PAGE_TRANSITION}
+      className="pb-24 min-h-screen bg-white max-w-4xl mx-auto w-full md:pt-12"
+    >
       <div className="hidden md:flex items-center gap-3 mb-8 px-6">
         <button onClick={() => navigateTo(ROUTES.cart)} className="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-full text-slate-600 rotate-180">
           <ChevronRight size={24} />
@@ -1544,6 +1457,18 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
       </div>
       <div className="px-4 md:px-6">
         <form onSubmit={handleSubmit} className="bg-white md:shadow-2xl md:p-10 md:rounded-[2rem] md:border border-gray-50 space-y-6 mt-6 md:mt-0">
+          {locationsError && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+              {locationsError}
+            </div>
+          )}
+
+          {formError && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+              {formError}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2 ml-1">الاسم واللقب</label>
@@ -1573,11 +1498,14 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
               <label className="block text-sm font-bold text-gray-700 mb-2 ml-1">الولاية</label>
               <select
                 required
-                value={formData.wilayaCode}
+                value={effectiveWilayaCode}
                 onChange={handleWilayaChange}
                 className="w-full bg-gray-50 border border-gray-200 rounded-2xl py-4 px-4 font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                disabled={isLocationsLoading || wilayaOptions.length === 0}
               >
-                {WILAYA_OPTIONS.map((wilaya) => (
+                {isLocationsLoading && <option value="">جاري تحميل الولايات...</option>}
+                {!isLocationsLoading && wilayaOptions.length === 0 && <option value="">لا تتوفر بيانات الولايات</option>}
+                {wilayaOptions.map((wilaya) => (
                   <option key={wilaya.wilaya_code} value={wilaya.wilaya_code}>
                     {wilaya.wilaya_name}
                   </option>
@@ -1588,14 +1516,15 @@ const CheckoutView = ({ cart, checkoutPricing, onAddOrder, navigateTo }) => {
               <label className="block text-sm font-bold text-gray-700 mb-2 ml-1">البلدية</label>
               <select
                 required
-                value={formData.communeName}
+                value={effectiveCommuneName}
                 onChange={(event) => setFormData({ ...formData, communeName: event.target.value })}
                 className="w-full bg-gray-50 border border-gray-200 rounded-2xl py-4 px-4 font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                disabled={communesForSelectedWilaya.length === 0}
+                disabled={isLocationsLoading || communesForSelectedWilaya.length === 0}
               >
-                {communesForSelectedWilaya.length === 0 && <option value="">لا توجد بلديات</option>}
+                {isLocationsLoading && <option value="">جاري تحميل البلديات...</option>}
+                {!isLocationsLoading && communesForSelectedWilaya.length === 0 && <option value="">لا توجد بلديات</option>}
                 {communesForSelectedWilaya.map((commune) => (
-                  <option key={`${formData.wilayaCode}-${commune.id}`} value={commune.commune_name}>
+                  <option key={`${effectiveWilayaCode}-${commune.id}`} value={commune.commune_name}>
                     {commune.commune_name}
                   </option>
                 ))}
@@ -1786,1030 +1715,15 @@ const AdminLogin = ({ showToast, onBackToStore }) => {
   );
 };
 
-const AdminCMS = ({
-  orders,
-  setOrders,
-  products,
-  setProducts,
-  siteConfig,
-  setSiteConfig,
-  onLogout,
-  showToast,
-  syncStatus,
-  adminUser,
-  adminTheme,
-  setAdminTheme,
-}) => {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [showProductForm, setShowProductForm] = useState(false);
-  const [editingProduct, setEditingProduct] = useState(null);
-  const [productForm, setProductForm] = useState({
-    name: '',
-    price: '',
-    oldPrice: '',
-    category: CATEGORIES[1],
-    image: '',
-    stock: 10,
-    variants: { ...DEFAULT_PRODUCT_VARIANTS },
-  });
-  const [productQuery, setProductQuery] = useState('');
-  const [orderSearch, setOrderSearch] = useState('');
-  const [orderStatusFilter, setOrderStatusFilter] = useState('all');
-  const [uploadingImage, setUploadingImage] = useState(false);
-  const [couponForm, setCouponForm] = useState({ code: '', discount: 10, maxUses: 100, expiresAt: '' });
-  const isDarkMode = adminTheme === 'dark';
+const LazyAdminCMS = lazy(() => import('./pages/AdminCMS'));
 
-  const revenue = useMemo(
-    () =>
-      orders
-        .filter((order) => order.status !== 'cancelled')
-        .reduce((sum, order) => sum + (Number(order.totalPrice) || 0), 0),
-    [orders],
-  );
-
-  const pendingOrdersCount = useMemo(
-    () => orders.filter((order) => order.status === 'pending').length,
-    [orders],
-  );
-
-  const deliveredOrdersCount = useMemo(
-    () => orders.filter((order) => order.status === 'delivered').length,
-    [orders],
-  );
-
-  const lowStockProducts = useMemo(() => products.filter((product) => clampStock(product.stock) <= 3), [products]);
-
-  const filteredOrders = useMemo(() => {
-    const query = orderSearch.trim().toLowerCase();
-    return orders.filter((order) => {
-      const statusOk = orderStatusFilter === 'all' || order.status === orderStatusFilter;
-      const customerWilayaName = (order.customer?.wilaya_name || order.customer?.wilaya || '').toLowerCase();
-      const customerCommuneName = (order.customer?.commune_name || order.customer?.commune || order.customer?.city || '').toLowerCase();
-      const queryOk =
-        !query ||
-        order.customer?.name?.toLowerCase().includes(query) ||
-        order.customer?.phone?.toLowerCase().includes(query) ||
-        customerWilayaName.includes(query) ||
-        customerCommuneName.includes(query);
-      return statusOk && queryOk;
-    });
-  }, [orders, orderSearch, orderStatusFilter]);
-
-  const filteredProducts = useMemo(() => {
-    const query = productQuery.trim().toLowerCase();
-    if (!query) return products;
-    return products.filter(
-      (product) =>
-        product.name.toLowerCase().includes(query) ||
-        product.category.toLowerCase().includes(query),
-    );
-  }, [products, productQuery]);
-
-  const adminCoupons = useMemo(
-    () => normalizeCoupons(siteConfig.coupons, siteConfig.couponCode, siteConfig.couponDiscount),
-    [siteConfig.coupons, siteConfig.couponCode, siteConfig.couponDiscount],
-  );
-
-  const sizeOptions = productForm.variants.sizeType === 'shoes' ? SHOE_SIZES : CLOTHING_SIZES;
-
-  const handleSaveProduct = (event) => {
-    event.preventDefault();
-
-    const normalizedVariants = normalizeProductVariants(productForm.variants);
-
-    const normalizedProduct = {
-      ...productForm,
-      name: productForm.name.trim(),
-      image: productForm.image.trim(),
-      price: Number(productForm.price) || 0,
-      oldPrice: Number(productForm.oldPrice) > 0 ? Number(productForm.oldPrice) : 0,
-      stock: clampStock(productForm.stock),
-      variants: normalizedVariants,
-    };
-
-    if (!normalizedProduct.name || !normalizedProduct.image || normalizedProduct.price <= 0) {
-      showToast('أدخل بيانات منتج صحيحة', 'error');
-      return;
-    }
-
-    if (normalizedProduct.oldPrice > 0 && normalizedProduct.oldPrice <= normalizedProduct.price) {
-      showToast('السعر قبل الخصم يجب أن يكون أكبر من السعر الحالي', 'error');
-      return;
-    }
-
-    if (editingProduct) {
-      setProducts(
-        products.map((product) =>
-          product.id === editingProduct.id ? { ...normalizedProduct, id: editingProduct.id } : product,
-        ),
-      );
-      showToast('تم تعديل المنتج بنجاح');
-    } else {
-      setProducts([{ ...normalizedProduct, id: Date.now() }, ...products]);
-      showToast('تم نشر المنتج الجديد في المتجر');
-    }
-
-    setShowProductForm(false);
-    setEditingProduct(null);
-    setProductForm({
-      name: '',
-      price: '',
-      oldPrice: '',
-      category: CATEGORIES[1],
-      image: '',
-      stock: 10,
-      variants: { ...DEFAULT_PRODUCT_VARIANTS },
-    });
-  };
-
-  const handleDeleteProduct = (id) => {
-    if (window.confirm('هل تريد حذف هذا المنتج من المتجر؟')) {
-      setProducts(products.filter((product) => product.id !== id));
-      showToast('تم حذف المنتج', 'error');
-    }
-  };
-
-
-  const handleUploadProductImage = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    
-
-    try {
-      setUploadingImage(true);
-      const imageUrl = await uploadProductImage(file);
-      setProductForm((prev) => ({ ...prev, image: imageUrl }));
-      showToast('تم رفع الصورة عبر ImgBB بنجاح');
-    } catch {
-      showToast('فشل رفع الصورة. تحقق من VITE_IMGBB_API_KEY', 'error');
-    } finally {
-      setUploadingImage(false);
-      event.target.value = '';
-    }
-  };
-
-  const handleCreateCoupon = (event) => {
-    event.preventDefault();
-
-    const code = normalizeCouponCode(couponForm.code);
-    const discount = clampDiscount(couponForm.discount);
-    const maxUses = clampUses(couponForm.maxUses);
-    const expiresAt = couponForm.expiresAt ? new Date(couponForm.expiresAt).toISOString() : '';
-
-    if (!code || discount <= 0) {
-      showToast('أدخل كود كوبون ونسبة خصم صحيحة', 'error');
-      return;
-    }
-
-    if (adminCoupons.some((coupon) => normalizeCouponCode(coupon.code) === code)) {
-      showToast('هذا الكود موجود مسبقاً', 'error');
-      return;
-    }
-
-    setSiteConfig({
-      ...siteConfig,
-      coupons: [
-        {
-          id: String(Date.now()) + '-' + code,
-          code,
-          discount,
-          maxUses,
-          usedCount: 0,
-          expiresAt,
-        },
-        ...adminCoupons,
-      ],
-    });
-
-    setCouponForm({ code: '', discount: 10, maxUses: 100, expiresAt: '' });
-    showToast('تم إنشاء الكوبون بنجاح', 'success');
-  };
-
-  const handleDeleteCoupon = (couponId) => {
-    setSiteConfig({
-      ...siteConfig,
-      coupons: adminCoupons.filter((coupon) => coupon.id !== couponId),
-    });
-    showToast('تم حذف الكوبون', 'error');
-  };
-
-  const handleOrderStatusChange = (orderId, nextStatus) => {
-    setOrders(
-      orders.map((order) => (order.id === orderId ? { ...order, status: nextStatus } : order)),
-    );
-    showToast('تم تحديث حالة الطلب');
-  };
-
-  return (
-    <Motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={PAGE_TRANSITION}
-      className={`admin-cms ${isDarkMode ? 'admin-theme-dark' : 'bg-gradient-to-br from-slate-100 via-white to-emerald-50/60'} pb-24 md:pb-10 min-h-screen`}
-    >
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap');
-        body { font-family: 'Tajawal', sans-serif; background-color: #f8fafc; margin: 0; padding: 0; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
-        input, select, button { -webkit-tap-highlight-color: transparent; }
-        @keyframes cart-shake {
-          0% { transform: translateX(0); }
-          25% { transform: translateX(-2px); }
-          50% { transform: translateX(2px); }
-          75% { transform: translateX(-1px); }
-          100% { transform: translateX(0); }
-        }
-        .animate-cart-shake { animation: cart-shake 0.38s ease-in-out; }
-        @keyframes skeleton-shimmer {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-        .skeleton-shimmer {
-          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
-          animation: skeleton-shimmer 1.2s infinite;
-        }
-      `}</style>
-      <header className={`sticky top-0 z-40 border-b backdrop-blur-xl ${isDarkMode ? "border-slate-700/70 bg-slate-900/80" : "border-slate-200/70 bg-white/90"}`}>
-        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between md:items-center gap-3">
-          <div>
-            <h1 className="text-xl md:text-2xl font-black admin-title flex items-center gap-2">
-              <ShieldCheck className="text-emerald-600" /> لوحة التحكم المركزية
-            </h1>
-            <p className={`text-xs font-bold mt-1 ${isDarkMode ? "text-slate-300" : "text-slate-500"}`} dir="ltr">{adminUser?.email || 'admin'}</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
-                siteConfig.isOnline
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : 'bg-orange-50 text-orange-700 border-orange-200'
-              }`}
-            >
-              {siteConfig.isOnline ? 'المتجر مفتوح' : 'وضع الصيانة'}
-            </span>
-            <span
-              className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
-                syncStatus === 'online'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : syncStatus === 'syncing'
-                  ? 'bg-amber-50 text-amber-700 border-amber-200'
-                  : 'bg-slate-100 text-slate-600 border-slate-200'
-              }`}
-            >
-              {syncStatus === 'online' ? 'Firebase متصل' : syncStatus === 'syncing' ? 'جاري المزامنة' : 'وضع محلي'}
-            </span>
-            <div className={`inline-flex items-center rounded-xl border p-1 ${isDarkMode ? 'admin-soft' : 'bg-white border-slate-200'}`}>
-              <button
-                onClick={() => setAdminTheme('dark')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-black inline-flex items-center gap-1 transition ${
-                  isDarkMode ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <MoonStar size={14} /> وضع ليل
-              </button>
-              <button
-                onClick={() => setAdminTheme('light')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-black inline-flex items-center gap-1 transition ${
-                  !isDarkMode ? 'bg-emerald-500 text-white' : 'text-slate-300 hover:bg-slate-800/60'
-                }`}
-              >
-                <SunMedium size={14} /> وضع صباح
-              </button>
-            </div>
-            <button
-              onClick={() => onLogout()}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-black hover:bg-slate-800 transition"
-              title="خروج"
-            >
-              <LogOut size={16} /> خروج
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="max-w-7xl mx-auto flex flex-col lg:flex-row mt-6 md:mt-8 px-4 md:px-6 gap-6 md:gap-8">
-        <aside className="lg:w-72 shrink-0">
-          <div className="rounded-3xl border border-slate-200 bg-white/95 backdrop-blur p-3 shadow-sm">
-            <div className="rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white p-4 mb-3">
-              <div className="flex items-center gap-2 font-black text-sm">
-                <Sparkles size={16} /> Dashboard Modern
-              </div>
-              <p className="text-[11px] text-emerald-50 mt-1">تنقل سريع بين الأقسام الأساسية</p>
-            </div>
-
-            <div className="flex lg:flex-col gap-2 overflow-x-auto no-scrollbar pb-1 lg:pb-0">
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'dashboard' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <LayoutDashboard size={18} /> نظرة عامة
-              </button>
-              <button
-                onClick={() => setActiveTab('orders')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'orders' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <ShoppingCart size={18} /> الطلبات
-              </button>
-              <button
-                onClick={() => setActiveTab('products')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'products' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Store size={18} /> المنتجات
-              </button>
-              <button
-                onClick={() => setActiveTab('marketing')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'marketing' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Megaphone size={18} /> التسويق
-              </button>
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-2xl whitespace-nowrap transition-colors font-bold ${
-                  activeTab === 'settings' ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <Settings size={18} /> الإعدادات
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <div className="flex-1 w-full overflow-hidden">
-          {activeTab === 'dashboard' && (
-            <div className="space-y-6 animate-in fade-in">
-              <h2 className="text-2xl font-black text-slate-900 mb-6">الإحصائيات الرئيسية</h2>
-
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                <div className="bg-slate-50 p-5 rounded-3xl border border-gray-100">
-                  <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center mb-3">
-                    <Package size={20} />
-                  </div>
-                  <p className="text-sm font-bold text-gray-500 mb-1">الطلبات</p>
-                  <p className="text-2xl font-black">{orders.length}</p>
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-3xl border border-gray-100">
-                  <div className="w-10 h-10 bg-amber-100 text-amber-700 rounded-xl flex items-center justify-center mb-3">
-                    <ShoppingCart size={20} />
-                  </div>
-                  <p className="text-sm font-bold text-gray-500 mb-1">قيد المعالجة</p>
-                  <p className="text-2xl font-black">{pendingOrdersCount}</p>
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-3xl border border-gray-100">
-                  <div className="w-10 h-10 bg-emerald-100 text-emerald-700 rounded-xl flex items-center justify-center mb-3">
-                    <CheckCircle size={20} />
-                  </div>
-                  <p className="text-sm font-bold text-gray-500 mb-1">تم التسليم</p>
-                  <p className="text-2xl font-black">{deliveredOrdersCount}</p>
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-3xl border border-gray-100">
-                  <div className="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center mb-3">
-                    <CreditCard size={20} />
-                  </div>
-                  <p className="text-sm font-bold text-gray-500 mb-1">الإيرادات</p>
-                  <p className="text-xl font-black text-emerald-600">{revenue} د.ج</p>
-                </div>
-
-                <div className="bg-slate-50 p-5 rounded-3xl border border-gray-100">
-                  <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-xl flex items-center justify-center mb-3">
-                    <AlertTriangle size={20} />
-                  </div>
-                  <p className="text-sm font-bold text-gray-500 mb-1">مخزون منخفض</p>
-                  <p className="text-2xl font-black">{lowStockProducts.length}</p>
-                </div>
-              </div>
-              <div className="mt-8 rounded-2xl border border-gray-200 bg-white p-6 text-center">
-                <p className="font-black text-slate-900 mb-2">عرض الطلبات أصبح في قسم مستقل</p>
-                <p className="text-sm font-bold text-gray-500 mb-4">اضغط على تبويب "الطلبات" لإدارة جميع الطلبات بالتفصيل.</p>
-                <button
-                  onClick={() => setActiveTab('orders')}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white font-black"
-                >
-                  <ShoppingCart size={16} /> فتح قسم الطلبات
-                </button>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'orders' && (
-            <div className="space-y-6 animate-in fade-in">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <h2 className="text-2xl font-black text-slate-900">إدارة الطلبات</h2>
-                <div className="text-sm font-bold text-gray-500">{filteredOrders.length} طلب</div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input
-                  type="text"
-                  value={orderSearch}
-                  onChange={(event) => setOrderSearch(event.target.value)}
-                  placeholder="بحث بالاسم أو الهاتف أو الولاية"
-                  className="md:col-span-2 bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-                />
-                <select
-                  value={orderStatusFilter}
-                  onChange={(event) => setOrderStatusFilter(event.target.value)}
-                  className="bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-                >
-                  <option value="all">كل الحالات</option>
-                  {ORDER_STATUSES.map((status) => (
-                    <option value={status.key} key={status.key}>
-                      {status.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {filteredOrders.length === 0 ? (
-                <div className="text-center py-12 bg-gray-50 rounded-2xl border border-gray-100 text-gray-400 font-bold">
-                  لا توجد نتائج مطابقة
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {filteredOrders.map((order) => (
-                    <div key={order.id} className="bg-white border border-gray-200 rounded-2xl p-5 space-y-4">
-                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                        <div>
-                          <p className="font-black text-slate-900 text-lg">{order.customer.name}</p>
-                          <p className="text-sm text-gray-500 font-bold">{order.customer.wilaya_name || order.customer.wilaya} • {order.customer.commune_name || order.customer.commune || order.customer.city}</p>
-                          <p className="text-sm text-gray-500 font-bold">{order.customer.phone}</p>
-                          <p className="text-xs text-gray-400 mt-1">#{String(order.id).slice(-6)} • {new Date(order.date).toLocaleString('ar-DZ')}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={order.status}
-                            onChange={(event) => handleOrderStatusChange(order.id, event.target.value)}
-                            className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 font-bold outline-none"
-                          >
-                            {ORDER_STATUSES.map((status) => (
-                              <option key={status.key} value={status.key}>
-                                {status.label}
-                              </option>
-                            ))}
-                          </select>
-                          <OrderStatusPill status={order.status} />
-                        </div>
-                      </div>
-
-                      <div className="bg-gray-50 border border-gray-100 rounded-xl p-3">
-                        <p className="text-xs font-black text-gray-500 mb-2">المنتجات</p>
-                        <div className="space-y-1">
-                          {order.items.map((item) => (
-                            <div key={`${order.id}-${item.cartKey || buildCartItemKey(item)}`} className="flex items-center justify-between text-sm font-bold text-slate-700">
-                              <span>
-                                {item.name}
-                                {(item.selectedSize || item.selectedColor) && (
-                                  <span className="text-[10px] text-slate-500 mr-2">
-                                    {item.selectedSize ? 'مقاس: ' + item.selectedSize : ''}
-                                    {item.selectedSize && item.selectedColor ? ' | ' : ''}
-                                    {item.selectedColor ? 'لون: ' + item.selectedColor : ''}
-                                  </span>
-                                )}
-                              </span>
-                              <span>x{item.qty}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-4 text-sm font-bold">
-                        <span className="text-gray-500">فرعي: {order.subtotal} د.ج</span>
-                        {order.discount > 0 && <span className="text-emerald-600">خصم: -{order.discount} د.ج</span>}
-                        {order.couponCode && <span className="text-gray-500" dir="ltr">{order.couponCode}</span>}
-                        <span className="text-slate-900">الإجمالي: {order.totalPrice} د.ج</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {activeTab === 'products' && (
-            <div className="space-y-6 animate-in fade-in">
-              <div className="flex flex-col md:flex-row justify-between md:items-center gap-3">
-                <h2 className="text-2xl font-black text-slate-900">إدارة المنتجات والمخزون</h2>
-                <button
-                  onClick={() => {
-                    setProductForm({
-                      name: '',
-                      price: '',
-                      oldPrice: '',
-                      category: CATEGORIES[1],
-                      image: '',
-                      stock: 10,
-                      variants: { ...DEFAULT_PRODUCT_VARIANTS },
-                    });
-                    setEditingProduct(null);
-                    setShowProductForm(true);
-                  }}
-                  className="bg-slate-900 text-white px-4 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg"
-                >
-                  <Plus size={18} /> إضافة منتج
-                </button>
-              </div>
-
-              <input
-                type="text"
-                value={productQuery}
-                onChange={(event) => setProductQuery(event.target.value)}
-                placeholder="بحث عن منتج..."
-                className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 font-bold outline-none focus:ring-2 focus:ring-slate-900/10"
-              />
-
-              {showProductForm ? (                <form onSubmit={handleSaveProduct} className="bg-slate-50 p-6 md:p-8 rounded-[2rem] border border-gray-200">
-                  <h3 className="font-black text-xl mb-6">{editingProduct ? 'تعديل المنتج' : 'نشر منتج جديد'}</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-bold mb-2">اسم المنتج</label>
-                      <input
-                        required
-                        type="text"
-                        value={productForm.name}
-                        onChange={(event) => setProductForm({ ...productForm, name: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-bold mb-2">القسم</label>
-                      <select
-                        required
-                        value={productForm.category}
-                        onChange={(event) => setProductForm({ ...productForm, category: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      >
-                        {CATEGORIES.filter((category) => category !== 'الكل').map((category) => (
-                          <option key={category}>{category}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-bold mb-2">السعر الحالي (د.ج)</label>
-                      <input
-                        required
-                        type="number"
-                        min="1"
-                        value={productForm.price}
-                        onChange={(event) => setProductForm({ ...productForm, price: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-bold mb-2">السعر قبل الخصم (اختياري)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={productForm.oldPrice}
-                        onChange={(event) => setProductForm({ ...productForm, oldPrice: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-bold mb-2">المخزون</label>
-                      <input
-                        required
-                        type="number"
-                        min="0"
-                        value={productForm.stock}
-                        onChange={(event) => setProductForm({ ...productForm, stock: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-bold mb-2">رابط الصورة (URL)</label>
-                      <input
-                        required
-                        type="url"
-                        dir="ltr"
-                        value={productForm.image}
-                        onChange={(event) => setProductForm({ ...productForm, image: event.target.value })}
-                        className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                      />
-                      <label className="block text-xs font-bold text-gray-500 mt-3 mb-2">أو ارفع صورة مباشرة عبر ImgBB</label>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleUploadProductImage}
-                        disabled={uploadingImage}
-                        className="w-full p-2 rounded-xl border border-dashed border-gray-300 bg-white text-xs font-bold"
-                      />
-                      <p className="text-[11px] text-slate-500 font-bold mt-1">يتطلب المتغير `VITE_IMGBB_API_KEY` في `.env`.</p>
-                    </div>
-
-                    <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-4">
-                      <p className="font-black text-sm">السمات الديناميكية</p>
-
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-bold inline-flex items-center gap-1"><Ruler size={14} /> تفعيل المقاسات</label>
-                        <input
-                          type="checkbox"
-                          checked={productForm.variants.enableSizes}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setProductForm({
-                              ...productForm,
-                              variants: {
-                                ...productForm.variants,
-                                enableSizes: enabled,
-                                sizes: enabled ? productForm.variants.sizes : [],
-                              },
-                            });
-                          }}
-                          className="w-5 h-5 accent-emerald-500"
-                        />
-                      </div>
-
-                      {productForm.variants.enableSizes && (
-                        <div className="space-y-2">
-                          <select
-                            value={productForm.variants.sizeType}
-                            onChange={(event) =>
-                              setProductForm({
-                                ...productForm,
-                                variants: {
-                                  ...productForm.variants,
-                                  sizeType: event.target.value,
-                                  sizes: [],
-                                },
-                              })
-                            }
-                            className="w-full p-2 rounded-lg border border-gray-300 text-sm font-bold"
-                          >
-                            <option value="clothing">مقاسات ملابس (S-XXL)</option>
-                            <option value="shoes">مقاسات أحذية (37-45)</option>
-                          </select>
-
-                          <div className="flex flex-wrap gap-2">
-                            {sizeOptions.map((size) => {
-                              const isActive = productForm.variants.sizes.includes(size);
-                              return (
-                                <button
-                                  type="button"
-                                  key={size}
-                                  onClick={() => {
-                                    const nextSizes = isActive
-                                      ? productForm.variants.sizes.filter((entry) => entry !== size)
-                                      : [...productForm.variants.sizes, size];
-                                    setProductForm({
-                                      ...productForm,
-                                      variants: { ...productForm.variants, sizes: nextSizes },
-                                    });
-                                  }}
-                                  className={`px-2 py-1 rounded-md border text-xs font-black ${isActive ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300'}`}
-                                >
-                                  {size}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-bold inline-flex items-center gap-1"><Palette size={14} /> تفعيل الألوان</label>
-                        <input
-                          type="checkbox"
-                          checked={productForm.variants.enableColors}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setProductForm({
-                              ...productForm,
-                              variants: {
-                                ...productForm.variants,
-                                enableColors: enabled,
-                                colors: enabled ? productForm.variants.colors : [],
-                              },
-                            });
-                          }}
-                          className="w-5 h-5 accent-emerald-500"
-                        />
-                      </div>
-
-                      {productForm.variants.enableColors && (
-                        <div className="flex flex-wrap gap-2">
-                          {COLOR_PRESETS.map((colorEntry) => {
-                            const isActive = productForm.variants.colors.includes(colorEntry.name);
-                            return (
-                              <button
-                                type="button"
-                                key={colorEntry.name}
-                                onClick={() => {
-                                  const nextColors = isActive
-                                    ? productForm.variants.colors.filter((entry) => entry !== colorEntry.name)
-                                    : [...productForm.variants.colors, colorEntry.name];
-                                  setProductForm({
-                                    ...productForm,
-                                    variants: { ...productForm.variants, colors: nextColors },
-                                  });
-                                }}
-                                className={`px-2 py-1 rounded-md border text-xs font-black inline-flex items-center gap-1 ${isActive ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-300'}`}
-                              >
-                                <span className="w-3 h-3 rounded-full border border-white/50" style={{ backgroundColor: colorEntry.hex }} />
-                                {colorEntry.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-3">
-                    <button type="submit" className="flex-1 bg-emerald-500 text-white font-black py-3 rounded-xl shadow-md">
-                      {editingProduct ? 'حفظ التعديلات' : 'نشر المنتج'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowProductForm(false)}
-                      className="px-6 bg-white border border-gray-300 text-gray-600 font-bold rounded-xl"
-                    >
-                      إلغاء
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {filteredProducts.map((product) => {
-                    const stock = clampStock(product.stock);
-                    return (
-                      <div key={product.id} className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm group">
-                        <img src={product.image} loading="lazy" decoding="async" className="w-full h-40 object-cover bg-gray-50" alt={product.name} />
-                        <div className="p-4">
-                          <p className="font-bold text-sm truncate mb-1">{product.name}</p>
-                          <p className="font-black text-emerald-600 mb-1">{product.price} د.ج</p>
-                          <p
-                            className={`text-xs font-black mb-4 ${
-                              stock === 0 ? 'text-red-600' : stock <= 3 ? 'text-orange-600' : 'text-gray-500'
-                            }`}
-                          >
-                            المخزون: {stock}
-                          </p>
-                          <div className="mb-3 flex flex-wrap gap-1">
-                            {normalizeProductVariants(product.variants).enableSizes && (
-                              <span className="text-[10px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-black">مقاسات</span>
-                            )}
-                            {normalizeProductVariants(product.variants).enableColors && (
-                              <span className="text-[10px] px-2 py-1 rounded-full bg-purple-50 text-purple-700 font-black">ألوان</span>
-                            )}
-                            {isProductOnSale(product) && (
-                              <span className="text-[10px] px-2 py-1 rounded-full bg-rose-50 text-rose-700 font-black">خصم {getDiscountPercent(product)}%</span>
-                            )}
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => {
-                                setProductForm({
-                                  ...product,
-                                  stock: clampStock(product.stock),
-                                  oldPrice: Number(product.oldPrice) > 0 ? product.oldPrice : '',
-                                  variants: normalizeProductVariants(product.variants),
-                                });
-                                setEditingProduct(product);
-                                setShowProductForm(true);
-                              }}
-                              className="flex-1 bg-blue-50 text-blue-600 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1"
-                            >
-                              <Edit3 size={14} /> تعديل
-                            </button>
-                            <button
-                              onClick={() => handleDeleteProduct(product.id)}
-                              className="bg-red-50 text-red-600 p-2 rounded-lg"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'settings' && (
-            <div className="space-y-6 animate-in fade-in max-w-2xl">
-              <h2 className="text-2xl font-black text-slate-900 mb-6">إعدادات المتجر الأساسية</h2>
-
-              <div className="bg-white border border-gray-200 p-6 md:p-8 rounded-[2rem] space-y-8">
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">اسم المتجر</label>
-                  <input
-                    type="text"
-                    value={siteConfig.name}
-                    onChange={(event) => setSiteConfig({ ...siteConfig, name: event.target.value })}
-                    className="w-full p-4 rounded-xl border border-gray-300 font-black text-lg outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all"
-                  />
-                </div>
-
-
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">رقم واتساب المتجر</label>
-                  <input
-                    type="tel"
-                    dir="ltr"
-                    value={siteConfig.whatsappNumber || ''}
-                    onChange={(event) =>
-                      setSiteConfig({
-                        ...siteConfig,
-                        whatsappNumber: event.target.value,
-                      })
-                    }
-                    placeholder="213555000000"
-                    className="w-full p-4 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 transition-all"
-                  />
-                  <p className="text-xs font-bold text-gray-500 mt-2">سيظهر في الزر العائم للتواصل عبر واتساب.</p>
-                </div>
-                <div className="pt-6 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-bold text-gray-700">حالة المتجر (إغلاق / فتح)</label>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-bold ${
-                        siteConfig.isOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'
-                      }`}
-                    >
-                      {siteConfig.isOnline ? 'نشط الآن' : 'مغلق للصيانة'}
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setSiteConfig({ ...siteConfig, isOnline: !siteConfig.isOnline });
-                      showToast(siteConfig.isOnline ? 'تم إغلاق المتجر للزبائن' : 'تم فتح المتجر للزبائن');
-                    }}
-                    className={`w-full py-4 rounded-xl font-black flex items-center justify-center gap-2 transition-all ${
-                      siteConfig.isOnline
-                        ? 'bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100'
-                        : 'bg-emerald-500 text-white shadow-lg hover:bg-emerald-600'
-                    }`}
-                  >
-                    <Power size={20} /> {siteConfig.isOnline ? 'تفعيل وضع الصيانة' : 'فتح المتجر'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'marketing' && (
-            <div className="space-y-6 animate-in fade-in max-w-3xl">
-              <h2 className="text-2xl font-black text-slate-900 mb-6">التسويق والإعلانات</h2>
-
-              <div className="bg-gradient-to-br from-emerald-500 to-teal-600 p-8 rounded-[2rem] text-white shadow-xl">
-                <div className="flex items-center gap-3 mb-6">
-                  <Megaphone size={32} className="text-emerald-100" />
-                  <h3 className="text-xl font-black">شريط الإعلانات العلوي</h3>
-                </div>
-
-                <input
-                  type="text"
-                  value={siteConfig.announcement}
-                  onChange={(event) => setSiteConfig({ ...siteConfig, announcement: event.target.value })}
-                  placeholder="مثال: توصيل مجاني هذا الأسبوع"
-                  className="w-full p-4 rounded-xl bg-white/20 border border-white/30 text-white placeholder-emerald-200 font-bold outline-none focus:bg-white/30 transition-all mb-4"
-                />
-
-                <div className="flex gap-3">
-                  <button onClick={() => showToast('تم تحديث شريط الإعلانات')} className="bg-slate-900 text-white px-6 py-3 rounded-xl font-black shadow-lg">
-                    حفظ الإعلان
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSiteConfig({ ...siteConfig, announcement: '' });
-                      showToast('تم إخفاء الإعلان');
-                    }}
-                    className="bg-white/10 hover:bg-white/20 text-white px-6 py-3 rounded-xl font-bold transition-all border border-white/20"
-                  >
-                    إخفاء الإعلان
-                  </button>
-                </div>
-              </div>
-
-                            <div className="bg-white border border-gray-200 p-6 md:p-8 rounded-[2rem] space-y-6">
-                <h3 className="text-xl font-black text-slate-900">كوبونات الخصم المتقدمة</h3>
-
-                <form onSubmit={handleCreateCoupon} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">رمز الكوبون</label>
-                    <input
-                      type="text"
-                      dir="ltr"
-                      value={couponForm.code}
-                      onChange={(event) => setCouponForm({ ...couponForm, code: event.target.value.toUpperCase() })}
-                      placeholder="WELCOME10"
-                      className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">نسبة الخصم %</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="90"
-                      value={couponForm.discount}
-                      onChange={(event) => setCouponForm({ ...couponForm, discount: clampDiscount(event.target.value) })}
-                      className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">عدد الاستخدامات المسموحة</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={couponForm.maxUses}
-                      onChange={(event) => setCouponForm({ ...couponForm, maxUses: clampUses(event.target.value) })}
-                      className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 mb-2">تاريخ الانتهاء (اختياري)</label>
-                    <input
-                      type="date"
-                      value={couponForm.expiresAt}
-                      onChange={(event) => setCouponForm({ ...couponForm, expiresAt: event.target.value })}
-                      className="w-full p-3 rounded-xl border border-gray-300 font-bold outline-none focus:border-slate-900"
-                    />
-                  </div>
-
-                  <div className="md:col-span-2 flex gap-3">
-                    <button type="submit" className="bg-slate-900 text-white px-6 py-3 rounded-xl font-black shadow-lg">
-                      إنشاء كوبون
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCouponForm({ code: '', discount: 10, maxUses: 100, expiresAt: '' })}
-                      className="bg-gray-100 text-gray-700 px-6 py-3 rounded-xl font-bold"
-                    >
-                      تفريغ الحقول
-                    </button>
-                  </div>
-                </form>
-
-                {adminCoupons.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-sm font-bold text-gray-400">
-                    لا توجد كوبونات مضافة حتى الآن.
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {adminCoupons.map((coupon) => {
-                      const expired = isCouponExpired(coupon);
-                      const exhausted = isCouponExhausted(coupon);
-                      return (
-                        <div key={coupon.id} className="rounded-xl border border-gray-200 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                          <div className="space-y-1">
-                            <p className="font-black text-slate-900" dir="ltr">{coupon.code}</p>
-                            <p className="text-xs font-bold text-gray-500">خصم {coupon.discount}% • الاستخدام {coupon.usedCount}/{coupon.maxUses}</p>
-                            {coupon.expiresAt && (
-                              <p className="text-xs font-bold text-gray-500">ينتهي: {new Date(coupon.expiresAt).toLocaleDateString('ar-DZ')}</p>
-                            )}
-                            <p className={`text-xs font-black ${expired || exhausted ? 'text-red-600' : 'text-emerald-600'}`}>
-                              {expired ? 'منتهي الصلاحية' : exhausted ? 'نفد الاستخدام' : 'فعّال'}
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => handleDeleteCoupon(coupon.id)}
-                            className="bg-red-50 text-red-600 px-4 py-2 rounded-lg font-bold"
-                          >
-                            حذف
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </Motion.div>
-  );
-};
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState(ROUTES.home);
   const [cart, dispatchCart] = useReducer(cartReducer, []);
   const [orders, setOrders] = useState(() => normalizeOrders(readStorage(STORAGE_KEYS.orders, [])));
   const [adminUser, setAdminUser] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(!auth);
-  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+  const { toast, showToast } = useToast();
 
   const [siteConfig, setSiteConfig] = useState(() => normalizeSiteConfig(readStorage(STORAGE_KEYS.siteConfig, {})));
 
@@ -2971,10 +1885,6 @@ export default function App() {
 
   const cartCount = cart.reduce((total, item) => total + item.qty, 0);
 
-  const showToast = (message, type = 'success') => {
-    setToast({ show: true, message, type });
-    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
-  };
 
   const navigateTo = (route) => {
     setCurrentRoute(route);
@@ -3072,21 +1982,23 @@ export default function App() {
     );
   };
 
-  const sendOrderToTelegram = async (order) => {
+  const notifyOrder = async (order) => {
     try {
-      await fetch('/api/send-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order }),
-      });
-    } catch {
-      // non-blocking notification
+      await sendOrderNotification(order);
+    } catch (error) {
+      showToast(String(error?.message || 'تم تسجيل الطلب، لكن تعذر إرسال الإشعار.'), 'error');
     }
   };
 
   const handleAddOrder = (customerData, cartItems, pricing) => {
     if (!cartItems.length) {
       showToast('السلة فارغة', 'error');
+      return;
+    }
+
+    const stockCheck = validateStockAvailability(cartItems, products);
+    if (!stockCheck.ok) {
+      showToast(stockCheck.issues[0], 'error');
       return;
     }
 
@@ -3107,42 +2019,51 @@ export default function App() {
       date: new Date().toISOString(),
     };
 
-    setOrders((previous) => [newOrder, ...previous]);
-    sendOrderToTelegram(newOrder);
+    try {
+      setOrders((previous) => [newOrder, ...previous]);
 
-    setProducts((previousProducts) =>
-      previousProducts.map((product) => {
-        const orderedItem = cartItems.find((item) => item.id === product.id);
-        if (!orderedItem) return product;
+      setProducts((previousProducts) =>
+        previousProducts.map((product) => {
+          const orderedItem = cartItems.find((item) => item.id === product.id);
+          if (!orderedItem) return product;
 
-        return {
-          ...product,
-          stock: Math.max(0, clampStock(product.stock) - orderedItem.qty),
-        };
-      }),
-    );
+          return {
+            ...product,
+            stock: Math.max(0, clampStock(product.stock) - orderedItem.qty),
+          };
+        }),
+      );
 
-    if (pricing?.couponCode) {
-      setSiteConfig((previousSiteConfig) => {
-        const nextCoupons = normalizeCoupons(previousSiteConfig.coupons, previousSiteConfig.couponCode, previousSiteConfig.couponDiscount).map((coupon) => {
-          const byId = pricing?.couponId && coupon.id === pricing.couponId;
-          const byCode = normalizeCouponCode(coupon.code) === normalizeCouponCode(pricing.couponCode);
-          if (!byId && !byCode) return coupon;
-          return { ...coupon, usedCount: (Number(coupon.usedCount) || 0) + 1 };
+      if (pricing?.couponCode) {
+        setSiteConfig((previousSiteConfig) => {
+          const nextCoupons = normalizeCoupons(
+            previousSiteConfig.coupons,
+            previousSiteConfig.couponCode,
+            previousSiteConfig.couponDiscount,
+          ).map((coupon) => {
+            const byId = pricing?.couponId && coupon.id === pricing.couponId;
+            const byCode = normalizeCouponCode(coupon.code) === normalizeCouponCode(pricing.couponCode);
+            if (!byId && !byCode) return coupon;
+            return { ...coupon, usedCount: (Number(coupon.usedCount) || 0) + 1 };
+          });
+
+          return {
+            ...previousSiteConfig,
+            coupons: nextCoupons,
+          };
         });
+      }
 
-        return {
-          ...previousSiteConfig,
-          coupons: nextCoupons,
-        };
-      });
+      dispatchCart({ type: 'CLEAR' });
+      setCheckoutPricing({ subtotal: 0, discount: 0, total: 0, couponCode: '', couponId: '' });
+      playUiSound('order');
+      showToast('تم إرسال طلبك بنجاح! شكراً لثقتك.', 'success');
+      navigateTo(ROUTES.home);
+
+      notifyOrder(newOrder);
+    } catch {
+      showToast('حدث خطأ أثناء حفظ الطلب. حاول مجددًا.', 'error');
     }
-
-    dispatchCart({ type: 'CLEAR' });
-    setCheckoutPricing({ subtotal: 0, discount: 0, total: 0, couponCode: '', couponId: '' });
-    playUiSound('order');
-    showToast('تم إرسال طلبك بنجاح! شكراً لثقتك.', 'success');
-    navigateTo(ROUTES.home);
   };
 
   if (!siteConfig.isOnline && currentRoute !== ROUTES.admin && !isAdminAuth) {
@@ -3183,7 +2104,7 @@ export default function App() {
         }
       `}</style>
 
-      <Toast toast={toast} />
+      <Toast toast={toast} transition={PAGE_TRANSITION} />
 
       {currentRoute !== ROUTES.admin && (
         <>
@@ -3277,24 +2198,53 @@ export default function App() {
           )}
 
           {currentRoute === ROUTES.admin && isAuthReady && isAdminAuth && (
-            <AdminCMS
-              key="admin"
-              orders={orders}
-              setOrders={setOrders}
-              products={products}
-              setProducts={setProducts}
-              siteConfig={siteConfig}
-              setSiteConfig={setSiteConfig}
-              onLogout={async () => {
-                await handleAdminLogout();
-                navigateTo(ROUTES.home);
-              }}
-              adminUser={adminUser}
-              syncStatus={syncStatus}
-              adminTheme={adminTheme}
-              setAdminTheme={setAdminTheme}
-              showToast={showToast}
-            />
+            <Suspense
+              fallback={(
+                <Motion.div key="admin-loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-h-[70vh] flex items-center justify-center">
+                  <div className="bg-white border border-slate-200 rounded-3xl px-8 py-6 shadow-sm text-center">
+                    <p className="text-slate-600 font-black">جاري تحميل لوحة الإدارة...</p>
+                  </div>
+                </Motion.div>
+              )}
+            >
+              <LazyAdminCMS
+                key="admin"
+                orders={orders}
+                setOrders={setOrders}
+                products={products}
+                setProducts={setProducts}
+                siteConfig={siteConfig}
+                setSiteConfig={setSiteConfig}
+                onLogout={async () => {
+                  await handleAdminLogout();
+                  navigateTo(ROUTES.home);
+                }}
+                adminUser={adminUser}
+                syncStatus={syncStatus}
+                adminTheme={adminTheme}
+                setAdminTheme={setAdminTheme}
+                showToast={showToast}
+                helpers={{
+                  CATEGORIES,
+                  DEFAULT_PRODUCT_VARIANTS,
+                  SHOE_SIZES,
+                  CLOTHING_SIZES,
+                  COLOR_PRESETS,
+                  ORDER_STATUSES,
+                  clampStock,
+                  normalizeCoupons,
+                  normalizeCouponCode,
+                  clampDiscount,
+                  clampUses,
+                  normalizeProductVariants,
+                  isProductOnSale,
+                  getDiscountPercent,
+                  buildCartItemKey,
+                  getOrderStatusMeta,
+                  PAGE_TRANSITION,
+                }}
+              />
+            </Suspense>
           )}
         </AnimatePresence>
       </main>
@@ -3306,6 +2256,24 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
